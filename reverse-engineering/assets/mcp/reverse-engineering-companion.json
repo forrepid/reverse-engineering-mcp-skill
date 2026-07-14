@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "reverse-engineering-companion": {
+      "command": "python",
+      "args": [
+        "ABSOLUTE_PATH_TO/reverse-engineering/scripts/re_mcp_server.py"
+      ],
+      "env": {
+        "RE_MCP_MODE": "read_only",
+        "RE_MCP_LOG_LEVEL": "WARNING",
+        "RE_MCP_MAX_FILE_BYTES": "536870912",
+        "RE_MCP_MAX_REGION_BYTES": "1048576",
+        "RE_MCP_MAX_SCAN_BYTES": "67108864",
+        "RE_MCP_ALLOWED_ROOTS": "",
+        "RE_MCP_PROVIDER_CONFIG": "",
+        "RE_MCP_PROVIDER_TIMEOUT_SECONDS": "120",
+        "RE_MCP_MAX_PROVIDER_OUTPUT_BYTES": "4194304"
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reverse-engineering-companion"
+version = "0.5.0"
+description = "Bounded, evidence-oriented reverse-engineering CLI and MCP companion"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "capstone==5.0.9",
+  "lief==0.17.6",
+  "mcp==1.28.1",
+  "pefile==2024.8.26",
+  "requests==2.32.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy==1.19.1",
+  "ruff==0.13.1",
+]
+
+[project.scripts]
+re-cli = "re_core.cli:main"
+re-mcp-server = "re_mcp_server:main"
+
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+py-modules = ["re_cli", "re_mcp_server"]
+
+[tool.setuptools.packages.find]
+where = ["scripts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = false
+exclude = ["assets/"]

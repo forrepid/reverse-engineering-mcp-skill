@@ -1,0 +1,16 @@
+{
+  "schema_version": "0.5.0",
+  "providers": {
+    "die": {
+      "enabled": true,
+      "executable": "C:\\Tools\\Detect-It-Easy\\diec.exe"
+    },
+    "yara-x": {
+      "enabled": true,
+      "executable": "C:\\Tools\\yara-x\\yr.exe",
+      "rule_paths": [
+        "C:\\Rules\\organization.yar"
+      ]
+    }
+  }
+}

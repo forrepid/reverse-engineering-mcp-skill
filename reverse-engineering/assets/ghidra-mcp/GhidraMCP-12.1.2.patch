@@ -1,0 +1,120 @@
+diff --git a/bridge_mcp_ghidra.py b/bridge_mcp_ghidra.py
+--- a/bridge_mcp_ghidra.py
++++ b/bridge_mcp_ghidra.py
+@@ -57,6 +57,11 @@ def safe_post(endpoint: str, data: dict | str) -> str:
+     except Exception as e:
+         return f"Request failed: {str(e)}"
+ 
++@mcp.tool()
++def ghidra_health() -> list:
++    """Check the loopback Ghidra plugin and report the active program name."""
++    return safe_get("health")
++
+ @mcp.tool()
+ def list_methods(offset: int = 0, limit: int = 100) -> list:
+     """
+diff --git a/pom.xml b/pom.xml
+--- a/pom.xml
++++ b/pom.xml
+@@ -15,56 +15,56 @@
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>Generic</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/Generic.jar</systemPath>
+     </dependency>
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>SoftwareModeling</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/SoftwareModeling.jar</systemPath>
+     </dependency>
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>Project</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/Project.jar</systemPath>
+     </dependency>
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>Docking</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/Docking.jar</systemPath>
+     </dependency>
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>Decompiler</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/Decompiler.jar</systemPath>
+     </dependency>
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>Utility</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/Utility.jar</systemPath>
+     </dependency>
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>Base</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/Base.jar</systemPath>
+     </dependency>
+     <dependency>
+       <groupId>ghidra</groupId>
+       <artifactId>Gui</artifactId>
+-      <version>11.3.2</version>
++      <version>12.1.2</version>
+       <scope>system</scope>
+       <systemPath>${project.basedir}/lib/Gui.jar</systemPath>
+     </dependency>
+diff --git a/src/main/java/com/lauriewired/GhidraMCPPlugin.java b/src/main/java/com/lauriewired/GhidraMCPPlugin.java
+--- a/src/main/java/com/lauriewired/GhidraMCPPlugin.java
++++ b/src/main/java/com/lauriewired/GhidraMCPPlugin.java
+@@ -104,7 +104,15 @@ public class GhidraMCPPlugin extends Plugin {
+             server = null;
+         }
+ 
+-        server = HttpServer.create(new InetSocketAddress(port), 0);
++        // The MCP bridge is local-only. Binding to loopback prevents the
++        // unauthenticated analysis/mutation API from being exposed to the LAN.
++        server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
++
++        server.createContext("/health", exchange -> {
++            Program currentProgram = getCurrentProgram();
++            String program = currentProgram == null ? "none" : currentProgram.getName();
++            sendResponse(exchange, "status=ok\nprogram=" + program + "\n");
++        });
+ 
+         // Each listing endpoint uses offset & limit from query params:
+         server.createContext("/methods", exchange -> {
+diff --git a/src/main/resources/Module.manifest b/src/main/resources/Module.manifest
+--- a/src/main/resources/Module.manifest
++++ b/src/main/resources/Module.manifest
+@@ -1,2 +0,0 @@
+-GHIDRA_MODULE_NAME=GhidraMCP
+-GHIDRA_MODULE_DESC=An HTTP server plugin for Ghidra
+diff --git a/src/main/resources/extension.properties b/src/main/resources/extension.properties
+--- a/src/main/resources/extension.properties
++++ b/src/main/resources/extension.properties
+@@ -2,5 +2,5 @@ name=GhidraMCP
+ description=A plugin that runs an embedded HTTP server to expose program data.
+ author=LaurieWired
+ createdOn=2025-03-22
+-version=11.3.2
+-ghidraVersion=11.3.2
++version=12.1.2
++ghidraVersion=12.1.2
