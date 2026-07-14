@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reverse Engineering MCP"
+  short_description: "IDA, Ghidra ve güvenli çoklu istemci MCP analizi"
+  default_prompt: "Use $reverse-engineering to validate the RE_MCP environment, configure an MCP client, or analyze an authorized binary with evidence-backed, reversible workflows."
