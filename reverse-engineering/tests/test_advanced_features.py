@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -388,7 +389,9 @@ class FeatureAndMcpTests(unittest.TestCase):
     def test_companion_server_is_read_only_by_default(self) -> None:
         status = server_status()
         self.assertEqual(status["transport"], "stdio")
-        self.assertFalse(status["writes_exposed"])
+        self.assertTrue(status["writes_exposed"])
+        self.assertEqual(status["write_scope"], "timestamped OEP audit journal under the user application-data directory only")
+        self.assertFalse(status["binary_or_host_mutation_tools_exposed"])
         self.assertFalse(status["unsafe_tools_exposed"])
         self.assertEqual(status["environment"]["required_count"], 0)
         self.assertEqual(len(status["environment"]["variables"]), 13)
@@ -411,11 +414,14 @@ class FeatureAndMcpTests(unittest.TestCase):
             sample = Path(temporary) / "authorized-fixture.bin"
             sample.write_bytes(b"fixture; never executed")
             tool = server._tool_manager.get_tool("oep_runtime_plan")
-            plan = tool.fn(str(sample), provider="internal")
+            audit_dir = Path(temporary) / "audit"
+            with patch("re_core.event_journal.event_store_dir", return_value=audit_dir):
+                plan = tool.fn(str(sample), provider="internal")
         self.assertEqual(plan["status"], "plan_only")
         self.assertFalse(plan["broker_capture_contract"]["submission_enabled"])
         self.assertFalse(plan["broker_capture_contract"]["continuous_capture"])
         self.assertIsNone(plan["runtime_oep"]["display_value"])
+        self.assertTrue(plan["audit_event"]["recorded"])
 
 
 if __name__ == "__main__":

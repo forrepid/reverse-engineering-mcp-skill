@@ -85,6 +85,23 @@ Broker credential'ı uygulamaya verilecekse broker'ı başlatan yerel process'e
 secret manager'dan enjekte edin; Codex/Claude gibi MCP client config'lerine
 token'ı kopyalamayın. `env-check` token'ı yazdırmadan doğrular.
 
+## Ayrı yerel OEP PWA
+
+OEP MCP araçları her başarılı çağrıda UTC zaman damgalı, sınırlı bir denetim
+olayı yazar. Varsayılan konum Windows'ta
+`%LOCALAPPDATA%\reverse-engineering-companion\oep-events`, Linux'ta
+`$XDG_STATE_HOME/reverse-engineering-companion/oep-events` (yoksa
+`~/.local/state/...`) olur; son 500 olay tutulur. Yalnız hash, RVA/VA, durum,
+provider ve kısıtlı açıklama alanları kaydedilir; token, dosya yolu ve içerik
+kaydedilmez. Bu dar kapsamlı audit yazımı binary/IDB/host belleği değiştirmez.
+
+Ayrı terminalde `re-dashboard` komutunu çalıştırıp
+`http://127.0.0.1:8766/` adresini açın. Dashboard API/UI sadece loopback'e
+bağlanır ve GET-only'dir; PWA dosyaları kendisiyle birlikte paketlenir. Tarayıcı
+göstergeyi her 2.5 saniyede yeniler; service worker yalnız statik app kabuğunu
+cache'ler, `/api/*` canlı verisini cache'lemez. OEP işlemi yapılmadıysa değer
+“NOT VERIFIED”/bekleniyor olarak kalır.
+
 ### İzole mock bağlantı testi
 
 Bu sahte backend yalnız `GET /` ve `GET /health` yanıtlar; POST/PUT taleplerini

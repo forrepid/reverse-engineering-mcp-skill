@@ -18,6 +18,7 @@ from .environment import RuntimeEnvironment
 from .external import provider_status
 from .feature_catalog import validate_feature_catalog
 from .broker_config import BrokerConfigError, load_broker_config, probe_broker_health
+from .broker_discovery import discover_local_brokers
 
 
 DEPENDENCIES = ("mcp", "capstone", "lief", "pefile")
@@ -361,6 +362,7 @@ def build_readiness_report(
         "ghidra": ghidra,
         "runtime_oep_broker": {
             **broker_status,
+            "local_candidates": discover_local_brokers(),
             "adapter": None,
             "note": "Configuration/health only. Live capture, sample submission, and signing adapter are not enabled by this probe.",
         },

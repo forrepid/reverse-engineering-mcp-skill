@@ -294,12 +294,17 @@ koşulda host'ta otomatik başlatılmaz.
    çıktılarda redacted kalır. Canlı capture/signing adaptörü hâlâ yoktur.
    [x] Loopback-only test mock health endpoint eklendi; yalnız GET sağlık verir,
    POST/PUT 405 döndürür ve readiness `test_only` olarak işaretler. Bu, canlı
-   broker/capture doğrulaması değildir.
+   broker/capture doğrulaması değildir. [x] CAPE 8000, DRAKVUF Sandbox 5000 ve
+   CAPE distributed 9003 yerel port adayları yalnız loopback TCP-connect ile
+   keşfedilir; host/servis kimliği, key ve URL doğrulanmış sayılmaz.
 10. **M9.10 — MCP araç yüzeyi.** [~] `oep_static_candidates` artık açık
    `oep_result` (Runtime OEP NOT VERIFIED) alanını döndürür; `oep_runtime_plan`
    bounded plan üretip broker readiness durumunu verir ve hiçbir örneği
    göndermez/çalıştırmaz. `oep_runtime_verify` plan hash'i yanında operator
    Ed25519 public-key hash pin'ini zorunlu tutarak kanıtı salt-okunur doğrular.
+   OEP tool çağrıları user-data altındaki bounded UTC audit journal'a dar
+   read-write kayıt yazar. Ayrı loopback GET-only PWA bu logu ve OEP durumunu
+   canlı sunar; binary/IDB/host mutation aracı değildir.
    Ortak istemciler için read-only
    `oep_static_candidates` (scan/show/export) ve ayrı onay kapılı
    `oep_runtime_plan`, `oep_runtime_start`, `oep_runtime_status`,

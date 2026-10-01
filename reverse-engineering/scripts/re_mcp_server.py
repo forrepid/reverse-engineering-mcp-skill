@@ -11,6 +11,7 @@ from re_core.advanced_pe import analyze_pe_deep
 from re_core.advanced_workflows import execute_local_feature, local_feature_ids
 from re_core.adapters import GHIDRA_CAPABILITIES, IDA_CAPABILITIES, CapabilityProfile
 from re_core.broker_config import load_broker_config
+from re_core.broker_discovery import discover_local_brokers
 from re_core.client_configs import client_profiles
 from re_core.environment import (
     EnvironmentConfigError,
@@ -27,6 +28,7 @@ from re_core.feature_catalog import (
     validate_feature_catalog,
 )
 from re_core.file_types import classify_file
+from re_core.event_journal import append_oep_event
 from re_core.patching import create_patch_plan
 from re_core.readiness import build_readiness_report
 from re_core.selection import (
@@ -51,7 +53,10 @@ def server_status() -> dict[str, Any]:
         "mcp_importable": importlib.util.find_spec("mcp") is not None,
         "tool_count": 25,
         "default_mode": "read_only",
-        "writes_exposed": False,
+        "writes_exposed": True,
+        "write_scope": "timestamped OEP audit journal under the user application-data directory only",
+        "local_audit_writes": True,
+        "binary_or_host_mutation_tools_exposed": False,
         "unsafe_tools_exposed": False,
         "environment": environment,
         "feature_catalog": validate_feature_catalog(),
@@ -74,6 +79,19 @@ def build_server() -> Any:
         logging.getLogger(logger_name).setLevel(log_level)
     mcp = FastMCP("reverse-engineering-companion")
 
+    def _audit_oep(
+        operation: str, description: str, status: str, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            event = append_oep_event(operation, description, status, values)
+            return {
+                "recorded": True,
+                "event_id": event["event_id"],
+                "timestamp_utc": event["timestamp_utc"],
+            }
+        except (OSError, ValueError):
+            return {"recorded": False, "timestamp_utc": None}
+
     @mcp.tool()
     def classify_artifact(sample: str) -> dict[str, Any]:
         """Classify a local artifact from magic, structure, container, and bounded indicators."""
@@ -92,7 +110,7 @@ def build_server() -> Any:
             max_file_size=runtime.max_file_bytes,
             max_scan_bytes=runtime.max_scan_bytes,
         )
-        return {
+        payload = {
             "source": result["source"],
             "architecture": result["pe"].get("architecture"),
             "image_base": result["pe"].get("image_base"),
@@ -101,6 +119,19 @@ def build_server() -> Any:
             "oep_analysis": result["oep_analysis"],
             "mutation_performed": False,
         }
+        payload["audit_event"] = _audit_oep(
+            "oep_static_candidates",
+            "Statik PE OEP adayları analiz edildi; runtime doğrulaması yapılmadı.",
+            "not_verified",
+            {
+                "sample_sha256": result["source"].get("sha256"),
+                "declared_ep_rva": result["declared_entry_point"].get("rva"),
+                "declared_ep_va": result["declared_entry_point"].get("va"),
+                "static_candidate_count": len(result["oep_analysis"].get("candidates", [])),
+                "display_text": result["oep_result"].get("display_text"),
+            },
+        )
+        return payload
 
     @mcp.tool()
     def oep_runtime_plan(
@@ -133,6 +164,7 @@ def build_server() -> Any:
             "status": broker["status"],
             "provider": broker["provider"],
             "broker_id": broker["broker_id"],
+            "local_candidates": discover_local_brokers(),
             "capture_adapter": "not_implemented",
             "continuous_capture": False,
             "submission_enabled": False,
@@ -140,6 +172,19 @@ def build_server() -> Any:
             "note": "Plan preview only. No sample submission or execution is available through this MCP tool.",
         }
         plan["status"] = "plan_only"
+        plan["audit_event"] = _audit_oep(
+            "oep_runtime_plan",
+            "İzole runtime OEP planı üretildi; örnek gönderilmedi/çalıştırılmadı.",
+            "plan_only",
+            {
+                "sample_sha256": plan["sample"].get("sha256"),
+                "provider": plan["provider_type"],
+                "network": plan["policy"].get("network"),
+                "timeout_seconds": plan["resource_limits"].get("timeout_seconds"),
+                "ready_for_broker_submission": plan["runtime_oep"].get("ready_for_broker_submission"),
+                "broker_id": broker.get("broker_id"),
+            },
+        )
         return plan
 
     @mcp.tool()
@@ -159,12 +204,35 @@ def build_server() -> Any:
             runtime.validate_file(path)
             for path in (sample, plan, trace, dump, attestation, broker_public_key)
         ]
-        return verify_runtime_oep_evidence(
+        result = verify_runtime_oep_evidence(
             *paths,
             trusted_broker_id=trusted_broker_id,
             confirm_plan_sha256=confirm_plan_sha256,
             expected_broker_public_key_sha256=expected_broker_public_key_sha256,
         )
+        candidate = result.get("candidate")
+        values: dict[str, Any] = {
+            "sample_sha256": result.get("sample_sha256"),
+            "runtime_verified": result.get("runtime_verified"),
+            "display_text": result.get("oep_display"),
+            "broker_id": result.get("broker_id"),
+            "plan_sha256": result.get("plan_sha256"),
+        }
+        if isinstance(candidate, dict):
+            values.update(
+                {
+                    "runtime_oep_va": candidate.get("va"),
+                    "runtime_oep_rva": candidate.get("rva"),
+                    "dump_file_offset": candidate.get("dump_file_offset"),
+                }
+            )
+        result["audit_event"] = _audit_oep(
+            "oep_runtime_verify",
+            "Broker imzalı runtime OEP kanıtı yerel olarak doğrulandı.",
+            str(result.get("status", "unknown")),
+            values,
+        )
+        return result
 
     @mcp.tool()
     def inspect_binary_selection(

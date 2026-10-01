@@ -417,6 +417,15 @@ readiness yalnız base URL health GET'i yapar, sample/task göndermez ve capture
 adapter'ı hazır demek değildir. Token client config veya örnek env dosyasına
 yazılmaz.
 
+OEP çağrıları read-only analiz yetkisini korur; ayrıca açık ve dar kapsamlı
+read-write yüzeyi yalnız kullanıcı uygulama verisindeki UTC damgalı audit
+olaylarıdır (son 500 kayıt). `oep_static_candidates`, `oep_runtime_plan` ve
+`oep_runtime_verify` yapılan iş tanımı, sonuç durumu ve güvenli değer özetini
+kaydeder; token, sample yolu/içeriği ve host process belleği yazılmaz. Ayrı
+`re-dashboard` PWA `127.0.0.1:8766` üzerinde salt GET, loopback-only API ile bu
+olayları canlı gösterir. Binary/IDB patch ve sandbox start yetkisi bu kapsamdan
+çıkarılamaz.
+
 ## 9.5 `read_write` host profili
 
 İstemci config üretiminde varsayılan profil değişmeden kalır. Kullanıcı

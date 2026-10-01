@@ -23,6 +23,23 @@ private signing key must remain in the broker/HSM. Do not treat an ordinary
 CAPE report or an unsigned dump as runtime OEP proof. See the [CAPE REST API
 documentation](https://github.com/kevoreilly/CAPEv2/blob/master/docs/book/src/usage/api.rst).
 
+Readiness performs only loopback TCP-connect checks for common documented
+candidate ports: CAPE web/API `127.0.0.1:8000`, DRAKVUF Sandbox web `:5000`, and
+distributed CAPE `:9003`. These are discovery hints, not provider identity or
+health verification. CAPE's web service defaults to localhost:8000 in its
+documentation; DRAKVUF Sandbox describes a Flask UI/API at port 5000 and requires
+a dedicated Linux/Xen-oriented setup. See [CAPE web configuration](https://github.com/kevoreilly/CAPEv2/blob/master/docs/book/src/usage/web.rst),
+[CAPE distributed API](https://github.com/kevoreilly/CAPEv2/blob/master/docs/book/src/usage/dist.rst),
+and [DRAKVUF Sandbox setup](https://github.com/CERT-Polska/drakvuf-sandbox/blob/master/docs/usage/getting_started.rst).
+No remote network scan, key search, credential probing, or unauthenticated task
+submission is performed. VMRay/hosted providers require an operator-provided
+URL and trust material; credentials and public keys cannot be safely inferred.
+
+The MCP tools append bounded UTC audit records to the user-data directory. The
+separate PWA reads them through a loopback-only GET API, updates its view every
+2.5 seconds, and does not cache live API responses. This journal write is the
+only new read-write capability: no sample, database, or host process is mutated.
+
 ## Trust and approval gates
 
 1. Generate a sandbox plan with a pinned disposable image SHA-256, clean

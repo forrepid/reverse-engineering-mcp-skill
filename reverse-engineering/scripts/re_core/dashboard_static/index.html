@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101820">
+    <meta name="description" content="Loopback-only reverse engineering runtime OEP dashboard">
+    <title>RE OEP Dashboard</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">RE</span><div><p class="eyebrow">REVERSE ENGINEERING / LOCAL CONSOLE</p><h1>Runtime OEP Dashboard</h1></div></div>
+      <div class="top-actions"><span id="connection" class="connection"><i></i>Bağlanıyor</span><button id="refresh" class="button secondary" type="button">Yenile</button></div>
+    </header>
+
+    <main class="layout">
+      <section class="hero card" aria-labelledby="oep-title">
+        <div class="hero-copy"><p class="eyebrow">EN SON OEP İŞLEMİ</p><h2 id="oep-title">Runtime OEP</h2><p id="oep-description" class="muted">Henüz OEP işlemi kaydedilmedi.</p></div>
+        <div class="oep-value-wrap"><span id="oep-status" class="status-chip neutral">BEKLENİYOR</span><div id="oep-value" class="oep-value">—</div><p id="oep-subvalue" class="oep-subvalue">Runtime değeri doğrulanmış kanıt olmadan gösterilmez.</p></div>
+        <div class="hero-foot"><span>İşlem zamanı</span><time id="oep-time">—</time></div>
+      </section>
+
+      <section class="metrics" aria-label="Sistem durumu">
+        <article class="card metric"><p class="eyebrow">BROKER</p><strong id="broker-status">Kontrol ediliyor</strong><span id="broker-detail" class="muted">Yalnız yapılandırma ve yerel health görünümü</span></article>
+        <article class="card metric"><p class="eyebrow">SON İŞLEM</p><strong id="last-operation">—</strong><span id="last-operation-time" class="muted">Henüz kayıt yok</span></article>
+        <article class="card metric"><p class="eyebrow">DENETİM KAYDI</p><strong>Yerel / 500 kayıt</strong><span class="muted">Dosya ve host belleği değiştirilmez</span></article>
+      </section>
+
+      <section class="card discovery">
+        <div class="section-heading"><div><p class="eyebrow">LOOPBACK KEŞFİ</p><h2>Broker adayları</h2></div><span class="muted">TCP connect only · servis kimliği doğrulanmaz</span></div>
+        <div class="table-scroll"><table><thead><tr><th>Sağlayıcı tahmini</th><th>Yerel URL adayı</th><th>Port</th><th>Gözlem</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="4" class="empty">Yerel adaylar kontrol ediliyor…</td></tr></tbody></table></div>
+        <p class="callout">Açık port, broker kimliğini kanıtlamaz. API kimliği, TLS/auth ve Ed25519 anahtar pini ayrıca operatör tarafından doğrulanmalıdır. Key/token taraması yapılmaz.</p>
+      </section>
+
+      <section class="card activity">
+        <div class="section-heading"><div><p class="eyebrow">ZAMAN DAMGALI İŞ AKIŞI</p><h2>Yapılan işlemler</h2></div><span id="updated-at" class="muted">—</span></div>
+        <div class="table-scroll"><table><thead><tr><th>Zaman</th><th>İşlem / açıklama</th><th>Durum</th><th>Ölçülen değerler</th></tr></thead><tbody id="event-rows"><tr><td colspan="4" class="empty">Henüz OEP işlemi yok.</td></tr></tbody></table></div>
+      </section>
+
+      <footer><span>Yerel PWA · 127.0.0.1 · harici analitik yok</span><span>Audit yazımı açık · binary/host mutation kapalı</span></footer>
+    </main>
+  </body>
+</html>

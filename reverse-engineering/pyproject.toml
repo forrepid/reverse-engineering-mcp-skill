@@ -26,6 +26,7 @@ dev = [
 [project.scripts]
 re-cli = "re_core.cli:main"
 re-mcp-server = "re_mcp_server:main"
+re-dashboard = "re_core.dashboard:main"
 
 [tool.setuptools]
 package-dir = {"" = "scripts"}
@@ -33,6 +34,9 @@ py-modules = ["re_cli", "re_mcp_server"]
 
 [tool.setuptools.packages.find]
 where = ["scripts"]
+
+[tool.setuptools.package-data]
+re_core = ["dashboard_static/*"]
 
 [tool.ruff]
 line-length = 100
