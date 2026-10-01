@@ -9,11 +9,12 @@ sözleşmenin parçası değildir.
 
 1. Zorunlu değişken var mı?
 2. Desteklenen değişkenler
-3. Önerilen kurulum
-4. PowerShell ile doğrudan kullanım
-5. İstemci config biçimleri
-6. Güvenlik kuralları
-7. Sorun giderme
+3. Broker bağlantı ayarları
+4. Önerilen kurulum
+5. PowerShell ile doğrudan kullanım
+6. İstemci config biçimleri
+7. Güvenlik kuralları
+8. Sorun giderme
 
 ## Zorunlu değişken var mı?
 
@@ -56,6 +57,57 @@ C:\Samples;D:\Authorized-Lab
 
 Symlink ve `..` kaçışını azaltmak için dosya ve root yolları resolve edilir;
 sample, resolved root'lardan birinin altında değilse çağrı reddedilir.
+
+## Broker bağlantı ayarları
+
+İsteğe bağlı runtime broker ayarları `.env.example` içinde listelenir ve
+readiness çıktısında ayrıca raporlanır. Bunlar `RE_MCP_*` read-only MCP
+environment allowlist'inden ayrıdır:
+
+| Değişken | Örnek/değer | İşlev |
+|---|---|---|
+| `RE_BROKER_PROVIDER` | `none`, `mock`, `cape`, `drakvuf`, `vmray`, `internal` | Broker türünü seçer; varsayılan kapalıdır; `mock` yalnız test içindir |
+| `RE_BROKER_BASE_URL` | `http://127.0.0.1:8000/apiv2` | Broker API adresi; varsayılan yalnız loopback kabul eder |
+| `RE_BROKER_ID` | `lab-broker-01` | Operator tarafından tanınan broker kimliği |
+| `RE_BROKER_TOKEN` | boş | İsteğe bağlı API token; yalnız process environment/secret manager |
+| `RE_BROKER_PUBLIC_KEY` | 64 hex karakter | Ed25519 raw public key'in SHA-256 pin'i |
+| `RE_BROKER_ALLOW_REMOTE_HTTPS` | `false` | `true` ise HTTPS remote endpoint yapılandırmasına izin verir |
+
+Remote HTTP, URL içine credential/query eklemek ve public-key pin'i olmadan
+broker seçmek reddedilir. `readiness` health probe yalnız broker base URL'ine
+GET gönderir; sample/task submit etmez. Şimdiki readiness sonucu yapılandırma ve
+health erişimini gösterebilir ama `submission_enabled=false` kalır: canlı trace,
+dump ve imzalı attestation üreten broker worker adapter'ı ayrı geliştirme ve
+kurulum adımıdır. `env-check` ile `client-configs`, MCP'nin `RE_MCP_*`
+sözleşmesine dair olduğundan broker girdilerini `.env` dosyasında doğrular,
+ancak hiçbir `RE_BROKER_*` değerini (özellikle token'ı) client config'e yaymaz.
+Broker credential'ı uygulamaya verilecekse broker'ı başlatan yerel process'e
+secret manager'dan enjekte edin; Codex/Claude gibi MCP client config'lerine
+token'ı kopyalamayın. `env-check` token'ı yazdırmadan doğrular.
+
+### İzole mock bağlantı testi
+
+Bu sahte backend yalnız `GET /` ve `GET /health` yanıtlar; POST/PUT taleplerini
+405 ile reddeder, örnek çalıştırmaz, capture veya imza üretmez. Terminal 1:
+
+~~~powershell
+python -m re_core.mock_broker --port 8765
+~~~
+
+Terminal 2 (yalnız o terminal oturumu için):
+
+~~~powershell
+$env:RE_BROKER_PROVIDER = "mock"
+$env:RE_BROKER_BASE_URL = "http://127.0.0.1:8765"
+$env:RE_BROKER_ID = "mock-broker"
+$env:RE_BROKER_TOKEN = ""
+$env:RE_BROKER_PUBLIC_KEY = ""
+python scripts\re_cli.py doctor
+~~~
+
+Rapor `status=test_only`, `continuous_capture=false`, `submission_enabled=false`
+olarak kalmalıdır. Bu test URL/ID'si gerçek CAPE kimliği değildir ve runtime
+OEP üretmez.
 
 ## Önerilen kurulum
 

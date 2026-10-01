@@ -60,7 +60,7 @@ class ClientProfileTests(unittest.TestCase):
                 environment = servers["reverse-engineering-companion"]["env"]
                 self.assertEqual(environment["RE_MCP_MODE"], "read_only")
                 self.assertEqual(environment["RE_MCP_LOG_LEVEL"], "WARNING")
-                self.assertEqual(len(environment), 9)
+                self.assertEqual(len(environment), 13)
 
 
 class ClientConfigGenerationTests(unittest.TestCase):
@@ -130,7 +130,11 @@ class ClientConfigGenerationTests(unittest.TestCase):
     def test_ghidra_bridge_is_rendered_and_must_be_loopback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             bridge = Path(temporary) / "bridge_mcp_ghidra.py"
-            bridge.write_text("# fixture\n", encoding="utf-8")
+            bridge.write_text(
+                'def _filter_tools(profile):\n    pass\n'
+                'parser.add_argument("--profile", choices=["current", "read_only", "read_write"])\n',
+                encoding="utf-8",
+            )
             rendered = render_client_config(
                 "codex",
                 python_executable=sys.executable,
@@ -139,6 +143,26 @@ class ClientConfigGenerationTests(unittest.TestCase):
             )
             server = tomllib.loads(rendered)["mcp_servers"]["ghidra-mcp"]
             self.assertEqual(server["args"][-1], "http://127.0.0.1:8080/")
+            readonly = render_client_config(
+                "codex", python_executable=sys.executable,
+                companion_script=COMPANION, ghidra_bridge=bridge,
+                host_profile="read_only",
+            )
+            readonly_server = tomllib.loads(readonly)["mcp_servers"]["ghidra-mcp"]
+            self.assertIn("read_only", readonly_server["args"])
+            read_write = render_client_config(
+                "codex", python_executable=sys.executable,
+                companion_script=COMPANION, ghidra_bridge=bridge,
+                host_profile="read_write", confirm_read_write=True,
+            )
+            read_write_server = tomllib.loads(read_write)["mcp_servers"]["ghidra-mcp"]
+            self.assertIn("read_write", read_write_server["args"])
+            with self.assertRaisesRegex(ClientConfigError, "confirm-read-write"):
+                render_client_config(
+                    "codex", python_executable=sys.executable,
+                    companion_script=COMPANION, ghidra_bridge=bridge,
+                    host_profile="read_write",
+                )
             with self.assertRaises(ClientConfigError):
                 render_client_config(
                     "codex",
@@ -147,6 +171,49 @@ class ClientConfigGenerationTests(unittest.TestCase):
                     ghidra_bridge=bridge,
                     ghidra_server="http://example.com:8080/",
                 )
+            bridge.write_text("parser.add_argument('--profile')\n", encoding="utf-8")
+            with self.assertRaises(ClientConfigError):
+                render_client_config(
+                    "codex", python_executable=sys.executable,
+                    companion_script=COMPANION, ghidra_bridge=bridge,
+                    host_profile="read_only",
+                )
+
+    def test_ida_read_write_requires_opt_in_and_annotation_only_whitelist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            idalib = root / "idalib-mcp.exe"
+            idalib.write_bytes(b"")
+            profile = root / "ida-tools.txt"
+            profile.write_text("list_funcs\nrename\nset_comments\n", encoding="utf-8")
+            with self.assertRaisesRegex(ClientConfigError, "confirm-read-write"):
+                render_all_client_configs(
+                    root / "no-consent", python_executable=sys.executable,
+                    companion_script=COMPANION, idalib_mcp=idalib,
+                    ida_profile_path=str(profile), host_profile="read_write",
+                )
+            with self.assertRaisesRegex(ClientConfigError, "at least one configured"):
+                render_client_config(
+                    "codex", python_executable=sys.executable,
+                    companion_script=COMPANION, host_profile="read_write",
+                    confirm_read_write=True,
+                )
+            profile.write_text("list_funcs\npatch\n", encoding="utf-8")
+            with self.assertRaisesRegex(ClientConfigError, "disallowed tools"):
+                render_all_client_configs(
+                    root / "unsafe", python_executable=sys.executable,
+                    companion_script=COMPANION, idalib_mcp=idalib,
+                    ida_profile_path=str(profile), host_profile="read_write",
+                    confirm_read_write=True,
+                )
+            profile.write_text("list_funcs\nrename\nset_comments\n", encoding="utf-8")
+            result = render_all_client_configs(
+                root / "approved", python_executable=sys.executable,
+                companion_script=COMPANION, idalib_mcp=idalib,
+                ida_profile_path=str(profile), host_profile="read_write",
+                confirm_read_write=True, clients=["codex"],
+            )
+            self.assertTrue(result["read_write_opt_in"])
 
 
 if __name__ == "__main__":

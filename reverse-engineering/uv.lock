@@ -844,6 +844,7 @@ version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "capstone" },
+    { name = "cryptography" },
     { name = "lief" },
     { name = "mcp" },
     { name = "pefile" },
@@ -859,6 +860,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "capstone", specifier = "==5.0.9" },
+    { name = "cryptography", specifier = "==49.0.0" },
     { name = "lief", specifier = "==0.17.6" },
     { name = "mcp", specifier = "==1.28.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = "==1.19.1" },

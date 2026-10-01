@@ -4,6 +4,7 @@ import hashlib
 import re
 import struct
 import tarfile
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -252,21 +253,117 @@ def _unsafe_member(name: str) -> bool:
     return pure.is_absolute() or ".." in pure.parts or bool(re.match(r"^[A-Za-z]:", normalized))
 
 
-def archive_safety_audit(path: Path) -> dict[str, Any]:
+def _zip_directory_limits(
+    path: Path, *, max_members: int, max_index_bytes: int
+) -> tuple[int, int]:
+    """Read only the fixed ZIP end records before ZipFile materializes ZipInfo objects."""
+    size = path.stat().st_size
+    tail_size = min(size, 22 + 65_535 + 20)
+    with path.open("rb") as stream:
+        stream.seek(size - tail_size)
+        tail = stream.read(tail_size)
+        signature = b"PK\x05\x06"
+        end = tail.rfind(signature)
+        while end >= 0:
+            if end + 22 <= len(tail):
+                comment_size = struct.unpack_from("<H", tail, end + 20)[0]
+                if end + 22 + comment_size == len(tail):
+                    break
+            end = tail.rfind(signature, 0, end)
+        if end < 0:
+            raise AdvancedWorkflowError("ZIP end-of-central-directory record is invalid")
+        disk, directory_disk, disk_entries, entries, index_size, index_offset = struct.unpack_from(
+            "<4H2I", tail, end + 4
+        )
+        if disk or directory_disk or disk_entries != entries:
+            raise AdvancedWorkflowError("multi-disk ZIP archives are not supported")
+        if (
+            entries == 0xFFFF
+            or index_size == 0xFFFFFFFF
+            or index_offset == 0xFFFFFFFF
+        ):
+            locator = end - 20
+            if locator < 0 or tail[locator : locator + 4] != b"PK\x06\x07":
+                raise AdvancedWorkflowError("ZIP64 locator is missing")
+            zip64_offset = struct.unpack_from("<Q", tail, locator + 8)[0]
+            if zip64_offset > size - 56:
+                raise AdvancedWorkflowError("ZIP64 end record lies outside the archive")
+            stream.seek(zip64_offset)
+            record = stream.read(56)
+            if len(record) != 56 or record[:4] != b"PK\x06\x06":
+                raise AdvancedWorkflowError("ZIP64 end record is invalid")
+            disk, directory_disk = struct.unpack_from("<2I", record, 16)
+            disk_entries, entries, index_size = struct.unpack_from("<3Q", record, 24)
+            if disk or directory_disk or disk_entries != entries:
+                raise AdvancedWorkflowError("multi-disk ZIP64 archives are not supported")
+    if entries > max_members:
+        raise AdvancedWorkflowError(f"archive exceeds member limit {max_members}")
+    if index_size > max_index_bytes:
+        raise AdvancedWorkflowError(
+            f"archive central directory exceeds scan limit {max_index_bytes} bytes"
+        )
+    return entries, index_size
+
+
+def archive_safety_audit(
+    path: Path,
+    *,
+    max_members: int = 100_000,
+    max_expanded_bytes: int = 4 * 1024 * 1024 * 1024,
+    max_member_ratio: float = 1000.0,
+    timeout_seconds: float = 30.0,
+    max_archive_bytes: int = 512 * 1024 * 1024,
+    max_index_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, Any]:
+    if (max_members < 1 or max_expanded_bytes < 1 or max_member_ratio < 1
+            or timeout_seconds <= 0 or max_archive_bytes < 1 or max_index_bytes < 1):
+        raise AdvancedWorkflowError("archive safety limits must be positive")
+    started = time.monotonic()
+    source_size = path.stat().st_size
+    if source_size > max_archive_bytes:
+        raise AdvancedWorkflowError(
+            f"archive source exceeds file limit {max_archive_bytes} bytes"
+        )
+
+    def enforce_budget(member_count: int, expanded: int, stored: int) -> None:
+        if member_count > max_members:
+            raise AdvancedWorkflowError(f"archive exceeds member limit {max_members}")
+        if expanded > max_expanded_bytes:
+            raise AdvancedWorkflowError(f"archive exceeds expanded-byte limit {max_expanded_bytes}")
+        if expanded / max(stored, 1) > max_member_ratio:
+            raise AdvancedWorkflowError(f"archive exceeds expansion-ratio limit {max_member_ratio:g}")
+        if time.monotonic() - started > timeout_seconds:
+            raise AdvancedWorkflowError(f"archive audit exceeded time limit {timeout_seconds:g}s")
+
     members: list[dict[str, Any]] = []
     totals = {"member_count": 0, "stored_bytes": 0, "expanded_bytes": 0}
     kind = "unsupported"
     try:
         if zipfile.is_zipfile(path):
             kind = "zip"
+            declared_members, index_size = _zip_directory_limits(
+                path, max_members=max_members, max_index_bytes=max_index_bytes
+            )
             with zipfile.ZipFile(path) as archive:
                 infos = archive.infolist()
-                if len(infos) > 100_000:
-                    raise AdvancedWorkflowError("archive exceeds 100000 members")
+                if len(infos) != declared_members:
+                    raise AdvancedWorkflowError("ZIP central-directory member count mismatch")
+                if index_size > max_index_bytes:
+                    raise AdvancedWorkflowError("ZIP central directory exceeds scan limit")
+                enforce_budget(len(infos), 0, 1)
                 for zip_info in infos:
                     totals["member_count"] += 1
                     totals["stored_bytes"] += zip_info.compress_size
                     totals["expanded_bytes"] += zip_info.file_size
+                    member_ratio = zip_info.file_size / max(zip_info.compress_size, 1)
+                    if member_ratio > max_member_ratio:
+                        raise AdvancedWorkflowError(
+                            f"archive member exceeds expansion-ratio limit {max_member_ratio:g}"
+                        )
+                    enforce_budget(
+                        totals["member_count"], totals["expanded_bytes"],
+                        max(totals["stored_bytes"], 1),
+                    )
                     if len(members) < 2000:
                         members.append(
                             {
@@ -284,12 +381,13 @@ def archive_safety_audit(path: Path) -> dict[str, Any]:
                         )
         elif tarfile.is_tarfile(path):
             kind = "tar"
-            with tarfile.open(path, mode="r:*") as archive:
-                for tar_info in archive:
+            with tarfile.open(path, mode="r:*") as tar_archive:
+                for tar_info in tar_archive:
                     totals["member_count"] += 1
-                    if totals["member_count"] > 100_000:
-                        raise AdvancedWorkflowError("archive exceeds 100000 members")
+                    if totals["member_count"] > max_members:
+                        raise AdvancedWorkflowError(f"archive exceeds member limit {max_members}")
                     totals["expanded_bytes"] += max(0, tar_info.size)
+                    enforce_budget(totals["member_count"], totals["expanded_bytes"], max(path.stat().st_size, 1))
                     if len(members) < 2000:
                         members.append(
                             {
@@ -308,7 +406,7 @@ def archive_safety_audit(path: Path) -> dict[str, Any]:
                         )
         else:
             raise AdvancedWorkflowError("sample is not a supported ZIP/TAR archive")
-    except (OSError, tarfile.TarError, zipfile.BadZipFile) as error:
+    except (OSError, struct.error, tarfile.TarError, zipfile.BadZipFile) as error:
         raise AdvancedWorkflowError(f"archive inspection failed: {error}") from error
     stored = totals["stored_bytes"] or path.stat().st_size
     total_ratio = totals["expanded_bytes"] / max(stored, 1)
@@ -317,6 +415,15 @@ def archive_safety_audit(path: Path) -> dict[str, Any]:
         "totals": {**totals, "overall_expansion_ratio": round(total_ratio, 2)},
         "members": members,
         "members_truncated": totals["member_count"] > len(members),
+        "audit_limits": {
+            "max_archive_bytes": max_archive_bytes,
+            "max_index_bytes": max_index_bytes,
+            "max_members": max_members,
+            "max_expanded_bytes": max_expanded_bytes,
+            "max_member_ratio": max_member_ratio,
+            "timeout_seconds": timeout_seconds,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        },
         "risk_candidates": {
             "path_traversal": sum(item["path_traversal_candidate"] for item in members),
             "high_expansion_ratio": total_ratio >= 100,
@@ -393,8 +500,14 @@ def debug_source_map(path: Path, *, max_scan_bytes: int) -> dict[str, Any]:
     return {"paths": records, "scan_truncated": truncated}
 
 
-def analysis_coverage_metrics(path: Path) -> dict[str, Any]:
-    result = StaticAnalyzer(max_strings=5000).analyze(path)
+def analysis_coverage_metrics(
+    path: Path,
+    *,
+    host_coverage: dict[str, Any] | None = None,
+    max_file_bytes: int = 512 * 1024 * 1024,
+    max_scan_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, Any]:
+    result = StaticAnalyzer(max_file_size=max_file_bytes, max_scan_bytes=max_scan_bytes, max_strings=5000).analyze(path)
     executable_sections = [section for section in result.sections if "X" in section.permissions]
     covered_executable_bytes = sum(section.raw_size for section in executable_sections)
     return {
@@ -407,12 +520,13 @@ def analysis_coverage_metrics(path: Path) -> dict[str, Any]:
         "strings_extracted": len(result.strings),
         "findings_emitted": len(result.findings),
         "limitations": result.limitations,
-        "claim": "parser-coverage-metrics-not-code-coverage",
+        "host_coverage": host_coverage,
+        "claim": "local-parser-coverage; host capability coverage is reported only when live discovery is supplied",
     }
 
 
-def evidence_bundle(path: Path) -> dict[str, Any]:
-    result = StaticAnalyzer(max_strings=1000).analyze(path)
+def evidence_bundle(path: Path, *, max_file_bytes: int = 512 * 1024 * 1024, max_scan_bytes: int = 64 * 1024 * 1024) -> dict[str, Any]:
+    result = StaticAnalyzer(max_file_size=max_file_bytes, max_scan_bytes=max_scan_bytes, max_strings=1000).analyze(path)
     return {
         "bundle_schema": "0.5.0",
         "subject": result.to_dict(),
@@ -458,6 +572,12 @@ def execute_local_feature(
     *,
     second_sample: str | Path | None = None,
     max_scan_bytes: int = 64 * 1024 * 1024,
+    max_archive_members: int = 100_000,
+    max_archive_expanded_bytes: int = 4 * 1024 * 1024 * 1024,
+    max_archive_member_ratio: int = 1000,
+    archive_timeout_seconds: int = 30,
+    host_coverage: dict[str, Any] | None = None,
+    max_file_bytes: int = 512 * 1024 * 1024,
 ) -> dict[str, Any]:
     """Execute only allowlisted, non-mutating local feature implementations."""
     if feature_id not in LOCAL_FEATURES:
@@ -469,7 +589,7 @@ def execute_local_feature(
         raise AdvancedWorkflowError(f"sample is not a regular file: {path}")
     try:
         if feature_id == "file-taxonomy":
-            payload = classify_file(path).to_dict()
+            payload = classify_file(path, max_file_size=max_file_bytes).to_dict()
         elif feature_id in {
             "pe-oep-map",
             "boundary-overlay-map",
@@ -480,7 +600,9 @@ def execute_local_feature(
             "language-provenance",
             "dongle-license-map",
         }:
-            deep = analyze_pe_deep(path)
+            if path.stat().st_size > max_file_bytes:
+                raise AdvancedWorkflowError(f"sample exceeds configured file limit {max_file_bytes}")
+            deep = analyze_pe_deep(path, max_file_size=max_file_bytes, max_scan_bytes=max_scan_bytes)
             keys = {
                 "pe-oep-map": ("declared_entry_point",),
                 "boundary-overlay-map": ("boundaries", "sections"),
@@ -505,24 +627,36 @@ def execute_local_feature(
         elif feature_id == "recursive-embedded-carver":
             payload = recursive_embedded_map(path, max_scan_bytes=max_scan_bytes)
         elif feature_id == "archive-safety-audit":
-            payload = archive_safety_audit(path)
+            payload = archive_safety_audit(
+                path,
+                max_members=max_archive_members,
+                max_expanded_bytes=max_archive_expanded_bytes,
+                max_member_ratio=max_archive_member_ratio,
+                timeout_seconds=archive_timeout_seconds,
+                max_archive_bytes=max_file_bytes,
+                max_index_bytes=max_scan_bytes,
+            )
         elif feature_id == "signature-trust-assessment":
             payload = signature_trust_assessment(path, max_scan_bytes=max_scan_bytes)
         elif feature_id == "debug-source-map":
             payload = debug_source_map(path, max_scan_bytes=max_scan_bytes)
         elif feature_id == "dependency-risk-map":
-            payload = build_binary_inventory(path)
+            payload = build_binary_inventory(
+                path,
+                max_file_bytes=max_file_bytes,
+                max_scan_bytes=max_scan_bytes,
+            )
         elif feature_id == "analysis-coverage-metrics":
-            payload = analysis_coverage_metrics(path)
+            payload = analysis_coverage_metrics(path, host_coverage=host_coverage, max_file_bytes=max_file_bytes, max_scan_bytes=max_scan_bytes)
         elif feature_id == "evidence-bundle-export":
-            payload = evidence_bundle(path)
+            payload = evidence_bundle(path, max_file_bytes=max_file_bytes, max_scan_bytes=max_scan_bytes)
         else:
             if second_sample is None:
                 raise AdvancedWorkflowError(f"{feature_id} requires second_sample")
             other = Path(second_sample).expanduser().resolve()
             if not other.is_file():
                 raise AdvancedWorkflowError(f"second_sample is not a regular file: {other}")
-            payload = compare_files(path, other)
+            payload = compare_files(path, other, analyzer=StaticAnalyzer(max_file_size=max_file_bytes, max_scan_bytes=max_scan_bytes))
             if feature_id == "patch-regression-verifier":
                 payload = {
                     "comparison": payload,

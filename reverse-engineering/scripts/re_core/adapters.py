@@ -76,6 +76,38 @@ class CapabilityProfile:
             if (operation := self.classify_resource(uri)) is not None
         }
 
+    def coverage_report(self) -> dict[str, object]:
+        available = self.available()
+        unavailable = sorted(name for name, present in available.items() if not present)
+        return {
+            "host": self.host,
+            "endpoint": self.endpoint,
+            "discovery_performed": bool(self.discovered_tools or self.discovered_resources),
+            "discovered_tool_count": len(self.discovered_tools),
+            "discovered_resource_count": len(self.discovered_resources),
+            "known_capability_count": len(available),
+            "available_capability_count": sum(available.values()),
+            "coverage_ratio": round(sum(available.values()) / max(1, len(available)), 4),
+            "available_capabilities": sorted(name for name, present in available.items() if present),
+            "missing_capabilities": unavailable,
+            "unknown_tools": self.unknown_tools(),
+            "unknown_resources": self.unknown_resources(),
+        }
+
+    def policy_report(self, profile: str) -> dict[str, object]:
+        if profile not in {"current", "read_only", "read_write", "annotate", "patch_plan", "debug"}:
+            raise ValueError("unsupported host tool profile")
+        classes = {
+            OperationClass.READ: {"read_only", "read_write", "current", "annotate", "patch_plan", "debug"},
+            OperationClass.ANNOTATE: {"read_write", "annotate", "patch_plan", "debug"},
+            OperationClass.PATCH: {"patch_plan"},
+            OperationClass.DEBUG: {"debug"},
+            OperationClass.DYNAMIC: set(),
+        }
+        allowed = sorted(name for name in self.discovered_tools if (operation := self.classify(name)) is not None and profile in classes[operation])
+        blocked = sorted(name for name in self.discovered_tools if (operation := self.classify(name)) is None or profile not in classes[operation])
+        return {"host": self.host, "profile": profile, "enforcement": "report-only; configure host profile during MCP launch to enforce", "available_tools_in_profile": allowed, "blocked_or_unknown_tools": blocked, "mutations_executable_here": False}
+
     def require_loopback(self) -> None:
         if not self.endpoint:
             return

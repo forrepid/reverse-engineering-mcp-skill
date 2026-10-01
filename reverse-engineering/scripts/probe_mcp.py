@@ -45,6 +45,8 @@ async def probe(command: str, arguments: list[str], adapter: str) -> dict[str, A
                 "adapter": (
                     {
                         "host": profile.host,
+                        "coverage": profile.coverage_report(),
+                        "operation_policy": profile.policy_report("read_only"),
                         "capabilities": profile.available(),
                         "unknown_tools": profile.unknown_tools(),
                         "known_resources": profile.available_resources(),

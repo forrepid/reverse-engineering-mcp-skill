@@ -16,12 +16,12 @@ from re_core.environment import (
 
 
 class EnvironmentContractTests(unittest.TestCase):
-    def test_contract_has_nine_visible_non_secret_defaults(self) -> None:
+    def test_contract_has_visible_non_secret_defaults(self) -> None:
         payload = environment_contract({})
         self.assertEqual(payload["required_count"], 0)
         self.assertEqual(payload["secret_count"], 0)
         self.assertFalse(payload["automatic_dotenv_loading"])
-        self.assertEqual(len(payload["variables"]), 9)
+        self.assertEqual(len(payload["variables"]), 13)
         self.assertEqual(payload["runtime"]["mode"], "read_only")
 
     def test_assignments_and_env_file_are_validated(self) -> None:
@@ -38,6 +38,23 @@ class EnvironmentContractTests(unittest.TestCase):
             )
             self.assertEqual(resolved["RE_MCP_LOG_LEVEL"], "ERROR")
             self.assertEqual(resolved["RE_MCP_MAX_REGION_BYTES"], "4096")
+
+    def test_broker_env_file_is_validated_but_secret_is_not_forwarded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            env_file = Path(temporary) / ".env"
+            env_file.write_text(
+                "RE_MCP_LOG_LEVEL=INFO\n"
+                "RE_BROKER_PROVIDER=cape\n"
+                "RE_BROKER_BASE_URL=http://127.0.0.1:8000/apiv2\n"
+                "RE_BROKER_ID=lab-01\n"
+                "RE_BROKER_TOKEN=do-not-forward\n"
+                f"RE_BROKER_PUBLIC_KEY={'ab' * 32}\n",
+                encoding="utf-8",
+            )
+            resolved = resolve_config_environment(env_file=env_file)
+        self.assertIn("RE_MCP_LOG_LEVEL", resolved)
+        self.assertFalse(any(name.startswith("RE_BROKER_") for name in resolved))
+        self.assertNotIn("do-not-forward", str(resolved))
 
     def test_unknown_or_unsafe_values_fail_closed(self) -> None:
         with self.assertRaises(EnvironmentConfigError):

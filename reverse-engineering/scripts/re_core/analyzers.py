@@ -481,10 +481,12 @@ class StaticAnalyzer:
         self,
         *,
         max_file_size: int = 512 * 1024 * 1024,
+        max_scan_bytes: int = 64 * 1024 * 1024,
         min_string_length: int = 4,
         max_strings: int = 5000,
     ) -> None:
         self.max_file_size = max_file_size
+        self.max_scan_bytes = min(max_scan_bytes, 64 * 1024 * 1024)
         self.min_string_length = min_string_length
         self.max_strings = max_strings
 
@@ -497,7 +499,9 @@ class StaticAnalyzer:
             raise AnalysisError(
                 f"sample size {size} exceeds configured limit {self.max_file_size}"
             )
-        data = sample.read_bytes()
+        with sample.open("rb") as stream:
+            data = stream.read(min(size, self.max_scan_bytes))
+        scan_truncated = size > len(data)
         file_format, architecture = detect_format(data)
         identity = FileIdentity.from_values(sample, size, sha256, sha1, md5)
         strings, strings_truncated = extract_strings(
@@ -510,6 +514,7 @@ class StaticAnalyzer:
             "architecture": architecture,
             "entropy": round(calculate_entropy(data), 4),
             "header_hex": format_bytes(data[:32]),
+            "scanned_bytes": len(data),
         }
         sections: list[Section] = []
         imports: list[ImportLibrary] = []
@@ -518,6 +523,14 @@ class StaticAnalyzer:
 
         if strings_truncated:
             limitations.append(f"strings truncated at configured limit {self.max_strings}")
+        if scan_truncated:
+            limitations.append(
+                f"content scan limited to first {len(data)} of {size} bytes; PE structure/entropy may be partial"
+            )
+        if self.max_scan_bytes < 64 * 1024 * 1024:
+            limitations.append(f"analyzer working-set cap limited the scan to {self.max_scan_bytes} bytes below the configured scan limit")
+        if self.max_file_size < 1 or self.max_scan_bytes < 1:
+            raise AnalysisError("max_file_size and max_scan_bytes must be positive")
 
         if file_format == "PE":
             try:

@@ -4,12 +4,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from re_core.adapters import ghidra_profile
 
 
 def _result_text(result: Any) -> str:
@@ -20,20 +26,83 @@ def _result_text(result: Any) -> str:
     )
 
 
+def _http_status(url: str, token: str | None) -> tuple[int, str]:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    request = Request(url, headers=headers, method="GET")
+    try:
+        with urlopen(request, timeout=5) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except HTTPError as error:
+        return error.code, error.read().decode("utf-8", errors="replace")
+    except (OSError, URLError) as error:
+        raise RuntimeError(f"Ghidra HTTP auth probe failed: {error}") from error
+
+
+def _verify_http_auth(ghidra_server: str, token: str) -> dict[str, int]:
+    health_url = urljoin(ghidra_server.rstrip("/") + "/", "health")
+    missing_status, _ = _http_status(health_url, None)
+    wrong_status, _ = _http_status(health_url, "invalid-probe-token")
+    valid_status, direct_health = _http_status(health_url, token)
+    if (missing_status, wrong_status, valid_status) != (401, 401, 200):
+        raise RuntimeError(
+            "Ghidra bearer-auth contract failed: expected 401/401/200, got "
+            f"{missing_status}/{wrong_status}/{valid_status}"
+        )
+    if "status=ok" not in direct_health:
+        raise RuntimeError(f"authenticated Ghidra /health response is invalid: {direct_health!r}")
+    return {
+        "missing_token": missing_status,
+        "wrong_token": wrong_status,
+        "valid_token": valid_status,
+    }
+
+
 async def verify(
     bridge: Path,
     ghidra_server: str,
     expected_program: str | None,
+    token: str | None,
+    host_profile: str,
 ) -> dict[str, Any]:
+    if not token:
+        raise RuntimeError("RE_GHIDRA_TOKEN must contain the configured per-install token")
+    # Validate loopback before making any HTTP request; remote targets are out of scope.
+    ghidra_profile((), endpoint=ghidra_server)
+    auth_statuses = _verify_http_auth(ghidra_server, token)
     parameters = StdioServerParameters(
         command=sys.executable,
         args=[str(bridge), "--ghidra-server", ghidra_server],
+        env={**os.environ, "RE_GHIDRA_TOKEN": token},
     )
+
+
+    if host_profile in {"read_only", "read_write"}:
+        parameters.args.extend(["--profile", host_profile])
     async with stdio_client(parameters) as (reader, writer):
         async with ClientSession(reader, writer) as session:
             initialized = await session.initialize()
             tools = await session.list_tools()
             tool_names = sorted(item.name for item in tools.tools)
+            resources = await session.list_resources()
+            resource_uris = sorted(str(item.uri) for item in resources.resources)
+            profile = ghidra_profile(
+                tool_names,
+                endpoint=ghidra_server,
+                discovered_resources=resource_uris,
+            )
+            if host_profile in {"read_only", "read_write"}:
+                allowed_classes = {"read"} if host_profile == "read_only" else {"read", "annotate"}
+                mutation_tools = [
+                    name
+                    for name in tool_names
+                    if (operation := profile.classify(name)) is None
+                    or operation.value not in allowed_classes
+                ]
+                if mutation_tools:
+                    raise RuntimeError(
+                        f"{host_profile} Ghidra profile exposed disallowed tools: "
+                        + ", ".join(mutation_tools)
+                    )
             required = {"ghidra_health", "list_functions", "get_current_function"}
             missing = sorted(required - set(tool_names))
             if missing:
@@ -62,6 +131,12 @@ async def verify(
                 "server_name": initialized.serverInfo.name,
                 "server_version": initialized.serverInfo.version,
                 "tool_count": len(tool_names),
+                "http_auth_statuses": auth_statuses,
+                "resource_count": len(resource_uris),
+                "coverage": profile.coverage_report(),
+                "operation_policy": profile.policy_report(host_profile),
+                "unknown_tools": profile.unknown_tools(),
+                "unknown_resources": profile.unknown_resources(),
                 "health": health_text.splitlines(),
                 "function_listing_nonempty": True,
                 "current_function": current_text,
@@ -84,6 +159,10 @@ def main() -> int:
         help="Loopback URL exposed by the enabled Ghidra plugin.",
     )
     parser.add_argument(
+        "--profile", choices=("current", "read_only", "read_write"), default="read_only",
+        help="Host profile to verify; defaults to the safer read_only profile.",
+    )
+    parser.add_argument(
         "--expected-program",
         help="Optional active Program name required in the health response.",
     )
@@ -93,12 +172,19 @@ def main() -> int:
         parser.error("--bridge must identify the reviewed Ghidra MCP bridge")
     try:
         result = asyncio.run(
-            verify(bridge, args.ghidra_server, args.expected_program)
+            verify(
+                bridge, args.ghidra_server, args.expected_program,
+                os.environ.get("RE_GHIDRA_TOKEN"), args.profile,
+            )
         )
         print(json.dumps(result, indent=2))
         return 0
-    except (OSError, RuntimeError) as error:
-        print(f"error: {error}", file=sys.stderr)
+    except Exception as error:
+        message = str(error)
+        token = os.environ.get("RE_GHIDRA_TOKEN")
+        if token:
+            message = message.replace(token, "[REDACTED]")
+        print(f"error: {message}", file=sys.stderr)
         return 2
 
 

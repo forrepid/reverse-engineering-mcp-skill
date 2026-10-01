@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from .advanced_pe import AdvancedPeError, analyze_pe_deep
 from .advanced_workflows import AdvancedWorkflowError, execute_local_feature
-from .adapters import ghidra_profile, ida_profile
+from .adapters import CapabilityProfile, GHIDRA_CAPABILITIES, IDA_CAPABILITIES, ghidra_profile, ida_profile
 from .analyzers import (
     AnalysisError,
     StaticAnalyzer,
@@ -29,9 +31,14 @@ from .disassembly import DisassemblyError, disassemble_file
 from .external import ProviderError, provider_status, run_provider
 from .environment import (
     EnvironmentConfigError,
+    ENVIRONMENT_VARIABLES,
     environment_contract,
     load_runtime_environment,
+    SETTINGS_KEYS,
     resolve_config_environment,
+    read_saved_settings,
+    save_setting,
+    settings_path,
 )
 from .feature_catalog import (
     build_feature_workflow,
@@ -63,6 +70,7 @@ from .patch_impact import PatchImpactError, preview_patch_impact
 from .reporting import write_reports
 from .readiness import build_readiness_report
 from .sandbox import create_sandbox_plan
+from .runtime_oep import verify_runtime_oep_evidence
 from .selection import (
     SelectionError,
     build_dump_plan,
@@ -125,6 +133,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     result = StaticAnalyzer(
         min_string_length=args.min_string_length,
         max_strings=args.max_strings,
+        max_file_size=load_runtime_environment().max_file_bytes,
+        max_scan_bytes=load_runtime_environment().max_scan_bytes,
     ).analyze(args.sample)
     provider_records: list[dict[str, Any]] = []
     for provider in args.external:
@@ -197,7 +207,12 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     output_path = Path(args.output).resolve()
     if output_path in {Path(args.left).resolve(), Path(args.right).resolve()}:
         raise ValueError("comparison output cannot overwrite an input")
-    payload = compare_files(args.left, args.right, diff_range_limit=args.limit)
+    payload = compare_files(
+        args.left,
+        args.right,
+        analyzer=StaticAnalyzer(max_file_size=load_runtime_environment().max_file_bytes, max_scan_bytes=load_runtime_environment().max_scan_bytes),
+        diff_range_limit=args.limit,
+    )
     output = _write_json(payload, args.output)
     print(json.dumps({"comparison": output, "identical": payload["identical"]}, indent=2))
     return 0
@@ -260,12 +275,34 @@ def _cmd_sandbox_plan(args: argparse.Namespace) -> int:
         provider=args.provider,
         timeout_seconds=args.timeout,
         network=args.network,
+        image_digest=args.image_digest,
+        snapshot_id=args.snapshot_id,
+        cpu_cores=args.cpu_cores,
+        memory_mb=args.memory_mb,
+        disk_mb=args.disk_mb,
+        max_trace_bytes=args.max_trace_bytes,
+        max_dump_bytes=args.max_dump_bytes,
     )
     if Path(args.output).resolve() == Path(args.sample).resolve():
         raise ValueError("sandbox-plan output cannot overwrite the sample")
     output = _write_json(plan, args.output)
     print(json.dumps({"plan": output, "status": plan["status"]}, indent=2))
     return 0
+
+
+def _cmd_oep_runtime_verify(args: argparse.Namespace) -> int:
+    result = verify_runtime_oep_evidence(
+        args.sample,
+        args.plan,
+        args.trace,
+        args.dump,
+        args.attestation,
+        args.broker_public_key,
+        trusted_broker_id=args.trusted_broker_id,
+        confirm_plan_sha256=args.confirm_plan_sha256,
+    )
+    _emit_json(result, args.output, label="oep_runtime_verification")
+    return 0 if result["status"] == "verified" else 2
 
 
 def _cmd_tools(args: argparse.Namespace) -> int:
@@ -430,7 +467,12 @@ def _cmd_patch_impact(args: argparse.Namespace) -> int:
 
 
 def _cmd_inventory(args: argparse.Namespace) -> int:
-    payload = build_binary_inventory(args.sample)
+    runtime = load_runtime_environment()
+    payload = build_binary_inventory(
+        args.sample,
+        max_file_bytes=runtime.max_file_bytes,
+        max_scan_bytes=runtime.max_scan_bytes,
+    )
     if args.output and Path(args.output).resolve() == Path(args.sample).resolve():
         raise ValueError("inventory output cannot overwrite the sample")
     _emit_json(payload, args.output, label="inventory")
@@ -438,7 +480,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
 
 
 def _cmd_classify(args: argparse.Namespace) -> int:
-    payload = classify_file(args.sample).to_dict()
+    payload = classify_file(args.sample, max_file_size=load_runtime_environment().max_file_bytes).to_dict()
     if args.output and Path(args.output).resolve() == Path(args.sample).resolve():
         raise ValueError("classification output cannot overwrite the sample")
     _emit_json(payload, args.output, label="classification")
@@ -446,7 +488,12 @@ def _cmd_classify(args: argparse.Namespace) -> int:
 
 
 def _cmd_pe_deep(args: argparse.Namespace) -> int:
-    payload = analyze_pe_deep(args.sample)
+    runtime = load_runtime_environment()
+    payload = analyze_pe_deep(
+        args.sample,
+        max_file_size=runtime.max_file_bytes,
+        max_scan_bytes=runtime.max_scan_bytes,
+    )
     if args.output and Path(args.output).resolve() == Path(args.sample).resolve():
         raise ValueError("PE triage output cannot overwrite the sample")
     _emit_json(payload, args.output, label="pe_deep")
@@ -624,7 +671,13 @@ def _cmd_feature_run(args: argparse.Namespace) -> int:
         args.feature,
         args.sample,
         second_sample=args.second_sample,
-        max_scan_bytes=args.max_scan_bytes,
+        max_scan_bytes=load_runtime_environment().max_scan_bytes,
+        max_archive_members=load_runtime_environment().max_archive_members,
+        max_archive_expanded_bytes=load_runtime_environment().max_archive_expanded_bytes,
+        max_archive_member_ratio=load_runtime_environment().max_archive_member_ratio,
+        archive_timeout_seconds=load_runtime_environment().archive_timeout_seconds,
+        max_file_bytes=load_runtime_environment().max_file_bytes,
+        host_coverage=args.host_coverage,
     )
     _emit_json(payload, args.output, label="feature_result")
     return 0
@@ -651,6 +704,60 @@ def _cmd_env_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_settings(args: argparse.Namespace) -> int:
+    if args.settings_action == "set":
+        saved_path = save_setting(args.key, args.value)
+    elif args.settings_action == "adjust":
+        current = read_saved_settings().get(
+            args.key, str(load_runtime_environment().to_dict()[args.key])
+        )
+        saved_path = save_setting(args.key, int(current) + args.delta)
+    elif args.settings_action == "reset":
+        saved = read_saved_settings()
+        if args.key:
+            if args.key not in SETTINGS_KEYS:
+                raise EnvironmentConfigError(f"unknown setting: {args.key}")
+            saved.pop(args.key, None)
+        else:
+            saved.clear()
+        target = settings_path()
+        if saved:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix="settings-", suffix=".tmp", dir=target.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump({"schema_version": "1", "values": saved}, stream, indent=2)
+                    stream.write("\n")
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        elif target.exists():
+            target.unlink()
+        saved_path = target
+    else:
+        saved_path = settings_path()
+    runtime = load_runtime_environment()
+    payload = {
+        "path": str(saved_path),
+        "precedence": "process environment > saved settings > defaults",
+        "saved_values": read_saved_settings(),
+        "effective_values": runtime.to_dict(),
+        "adjustable_settings": [
+            {
+                "key": key,
+                "environment_variable": env_name,
+                "minimum": next(item.minimum for item in ENVIRONMENT_VARIABLES if item.name == env_name),
+                "maximum": next(item.maximum for item in ENVIRONMENT_VARIABLES if item.name == env_name),
+                "default": next(item.default for item in ENVIRONMENT_VARIABLES if item.name == env_name),
+            }
+            for key, env_name in SETTINGS_KEYS.items()
+        ],
+    }
+    _emit_json(payload)
+    return 0
+
+
 def _cmd_client_configs(args: argparse.Namespace) -> int:
     payload = render_all_client_configs(
         args.output_dir,
@@ -664,6 +771,11 @@ def _cmd_client_configs(args: argparse.Namespace) -> int:
         env_assignments=args.env,
         env_file=args.env_file,
         force=args.force,
+        host_profile=args.host_profile,
+        confirm_read_write=args.confirm_read_write,
+        ghidra_token=args.ghidra_token or os.environ.get(args.ghidra_token_env),
+        ida_profile_path=args.ida_profile_file,
+        ghidra_token_env=args.ghidra_token_env,
     )
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0
@@ -678,9 +790,22 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         ghidra_home=args.ghidra_home,
         ghidra_bridge=args.ghidra_bridge,
         ghidra_server=args.ghidra_server,
+        ghidra_token=os.environ.get("RE_GHIDRA_TOKEN"),
+        probe_ida=args.probe_ida,
     )
     _emit_json(payload, args.output, label="readiness")
     return 0 if payload["summary"]["local_companion_ready"] else 2
+
+
+def _cmd_host_coverage(args: argparse.Namespace) -> int:
+    capabilities = IDA_CAPABILITIES if args.host == "ida" else GHIDRA_CAPABILITIES
+    profile = CapabilityProfile(args.host, capabilities, endpoint=args.endpoint, discovered_tools=set(args.tool), discovered_resources=set(args.resource))
+    if args.endpoint:
+        profile.require_loopback()
+    payload = profile.coverage_report()
+    payload["tool_policy"] = profile.policy_report(args.profile)
+    _emit_json(payload, args.output, label="host_coverage")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -775,8 +900,30 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("blocked", "simulated", "restricted"),
         default="blocked",
     )
+    sandbox.add_argument("--image-digest", help="Pinned disposable guest image SHA-256 digest")
+    sandbox.add_argument("--snapshot-id", help="Operator-selected clean snapshot/clone identity")
+    sandbox.add_argument("--cpu-cores", type=int, default=2)
+    sandbox.add_argument("--memory-mb", type=int, default=2048)
+    sandbox.add_argument("--disk-mb", type=int, default=4096)
+    sandbox.add_argument("--max-trace-bytes", type=int, default=32 * 1024 * 1024)
+    sandbox.add_argument("--max-dump-bytes", type=int, default=64 * 1024 * 1024)
     sandbox.add_argument("--output", required=True)
     sandbox.set_defaults(handler=_cmd_sandbox_plan)
+
+    runtime_oep = subparsers.add_parser(
+        "oep-runtime-verify",
+        help="Verify a user-approved, broker-signed isolated trace and reconstructed PE dump; never executes the sample",
+    )
+    runtime_oep.add_argument("sample")
+    runtime_oep.add_argument("--plan", required=True, help="Exact sandbox plan file approved for this run")
+    runtime_oep.add_argument("--trace", required=True, help="Broker-normalized trace JSON")
+    runtime_oep.add_argument("--dump", required=True, help="Broker reconstructed PE dump")
+    runtime_oep.add_argument("--attestation", required=True, help="Ed25519-signed broker evidence manifest")
+    runtime_oep.add_argument("--broker-public-key", required=True, help="Operator-pinned Ed25519 public key file")
+    runtime_oep.add_argument("--trusted-broker-id", required=True)
+    runtime_oep.add_argument("--confirm-plan-sha256", required=True, help="Explicit confirmation of the exact approved plan digest")
+    runtime_oep.add_argument("--output")
+    runtime_oep.set_defaults(handler=_cmd_oep_runtime_verify)
 
     tools = subparsers.add_parser("tools", help="Show optional provider availability")
     tools.add_argument("--provider-config")
@@ -923,7 +1070,7 @@ def build_parser() -> argparse.ArgumentParser:
     classify.set_defaults(handler=_cmd_classify)
 
     pe_deep = subparsers.add_parser(
-        "pe-deep", help="Analyze PE entry point, boundaries, markers, injection, and obfuscation candidates"
+        "pe-deep", help="Analyze PE metadata, static OEP candidates, boundaries, and indicators without executing the sample"
     )
     pe_deep.add_argument("sample")
     pe_deep.add_argument("--output")
@@ -1079,9 +1226,18 @@ def build_parser() -> argparse.ArgumentParser:
     feature_run.add_argument("--feature", required=True)
     feature_run.add_argument("--sample", required=True)
     feature_run.add_argument("--second-sample")
-    feature_run.add_argument("--max-scan-bytes", type=int, default=64 * 1024 * 1024)
+    feature_run.add_argument("--host-coverage", type=json.loads, help="JSON live discovery record from IDA/Ghidra; never inferred from static catalogs")
     feature_run.add_argument("--output")
     feature_run.set_defaults(handler=_cmd_feature_run)
+
+    coverage = subparsers.add_parser("host-coverage", help="Calculate feature capability coverage from actual host discovery inputs")
+    coverage.add_argument("--host", choices=("ida", "ghidra"), required=True)
+    coverage.add_argument("--endpoint", default="")
+    coverage.add_argument("--tool", action="append", default=[])
+    coverage.add_argument("--resource", action="append", default=[])
+    coverage.add_argument("--profile", choices=("current", "read_only", "read_write", "annotate", "patch_plan", "debug"), default="read_only")
+    coverage.add_argument("--output")
+    coverage.set_defaults(handler=_cmd_host_coverage)
 
     env_show = subparsers.add_parser(
         "env-show", help="Show the companion MCP environment contract and effective values"
@@ -1103,6 +1259,21 @@ def build_parser() -> argparse.ArgumentParser:
     env_check.add_argument("--output")
     env_check.set_defaults(handler=_cmd_env_check)
 
+    settings = subparsers.add_parser(
+        "settings", help="Read, tune, save, and reset persistent bounded-analysis settings"
+    )
+    settings_actions = settings.add_subparsers(dest="settings_action", required=True)
+    settings_actions.add_parser("show", help="Show saved and effective values")
+    setting_set = settings_actions.add_parser("set", help="Set and persist one bounded setting")
+    setting_set.add_argument("key", choices=tuple(SETTINGS_KEYS))
+    setting_set.add_argument("value", type=int)
+    setting_adjust = settings_actions.add_parser("adjust", help="Increase/decrease and persist one setting")
+    setting_adjust.add_argument("key", choices=tuple(SETTINGS_KEYS))
+    setting_adjust.add_argument("delta", type=int, help="Positive to increase, negative to decrease")
+    setting_reset = settings_actions.add_parser("reset", help="Remove one or all saved overrides")
+    setting_reset.add_argument("key", nargs="?", choices=tuple(SETTINGS_KEYS))
+    settings.set_defaults(handler=_cmd_settings)
+
     doctor = subparsers.add_parser(
         "doctor", help="Audit local companion, IDA, Ghidra, dependencies, and providers"
     )
@@ -1111,6 +1282,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--ghidra-home")
     doctor.add_argument("--ghidra-bridge")
     doctor.add_argument("--ghidra-server", default="http://127.0.0.1:8080/")
+    doctor.add_argument("--probe-ida", action="store_true", help="Spawn selected idalib-mcp briefly for read-only MCP initialize/tools/list health probe")
     doctor.add_argument("--output")
     doctor.set_defaults(handler=_cmd_doctor)
 
@@ -1130,7 +1302,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(Path(__file__).resolve().parents[1] / "re_mcp_server.py"),
     )
     configs.add_argument("--idalib-mcp")
+    configs.add_argument("--ida-profile-file", help="Reviewed idalib-mcp --profile whitelist; required with restricted host profiles")
     configs.add_argument("--ghidra-bridge")
+    configs.add_argument("--ghidra-token-env", default="RE_GHIDRA_TOKEN", help="Environment variable name carrying Ghidra token; value is never written to generated config")
+    configs.add_argument("--ghidra-token", help="Supply secret to renderer process; it is validated and never written to outputs")
     configs.add_argument(
         "--ghidra-server",
         default="http://127.0.0.1:8080/",
@@ -1154,6 +1329,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override one allowlisted RE_MCP_* value; repeat as needed",
     )
     configs.add_argument("--force", action="store_true")
+    configs.add_argument("--host-profile", choices=("current", "read_only", "read_write"), default="current", help="current preserves upstream exposure; read_only filters writes; read_write exposes only reviewed annotations")
+    configs.add_argument("--confirm-read-write", action="store_true", help="Explicitly opt in to reviewed annotation tools; patch/debug/arbitrary code stay disabled")
     configs.set_defaults(handler=_cmd_client_configs)
     return parser
 

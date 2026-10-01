@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import itertools
 
 from .analyzers import StaticAnalyzer, format_bytes
 
@@ -55,8 +56,8 @@ def compare_files(
     engine = analyzer or StaticAnalyzer()
     left = engine.analyze(left_path)
     right = engine.analyze(right_path)
-    left_data = Path(left_path).read_bytes()
-    right_data = Path(right_path).read_bytes()
+    left_path = Path(left_path)
+    right_path = Path(right_path)
 
     summary_keys = sorted(set(left.summary) | set(right.summary))
     summary_changes = {
@@ -125,7 +126,47 @@ def compare_files(
                 or len(left_strings - right_strings) > 1000
             ),
         },
-        "byte_diff": _byte_diff_ranges(
-            left_data, right_data, limit=diff_range_limit
-        ),
+        "byte_diff": _byte_diff_files(left_path, right_path, limit=diff_range_limit),
     }
+
+
+def _byte_diff_files(left_path: Path, right_path: Path, *, limit: int = 1000) -> dict[str, Any]:
+    """Compare in bounded blocks; cap detailed ranges while counting all differences."""
+    ranges: list[dict[str, Any]] = []
+    total_changed = 0
+    active_start: int | None = None
+    active_left = bytearray()
+    active_right = bytearray()
+    detail_bytes = 0
+    detail_truncated = False
+    offset = 0
+    with left_path.open("rb") as left_stream, right_path.open("rb") as right_stream:
+        for left_block, right_block in itertools.zip_longest(
+            iter(lambda: left_stream.read(1024 * 1024), b""),
+            iter(lambda: right_stream.read(1024 * 1024), b""),
+            fillvalue=b"",
+        ):
+            maximum = max(len(left_block), len(right_block))
+            for index in range(maximum):
+                a = left_block[index] if index < len(left_block) else None
+                b = right_block[index] if index < len(right_block) else None
+                if a != b:
+                    total_changed += 1
+                    if active_start is None:
+                        active_start = offset + index
+                    if len(ranges) < limit and detail_bytes + len(active_left) < 4096:
+                        active_left.append(a if a is not None else 0)
+                        active_right.append(b if b is not None else 0)
+                    else:
+                        detail_truncated = True
+                elif active_start is not None:
+                    if len(ranges) < limit:
+                        ranges.append({"offset": active_start, "offset_hex": f"0x{active_start:X}", "length": len(active_left), "left": format_bytes(bytes(active_left)), "right": format_bytes(bytes(active_right)), "detail_truncated": len(active_left) < index + offset - active_start})
+                        detail_bytes += len(active_left)
+                    active_start = None
+                    active_left.clear()
+                    active_right.clear()
+            offset += maximum
+    if active_start is not None and len(ranges) < limit:
+        ranges.append({"offset": active_start, "offset_hex": f"0x{active_start:X}", "length": len(active_left), "left": format_bytes(bytes(active_left)), "right": format_bytes(bytes(active_right)), "detail_truncated": len(active_left) < offset + maximum - active_start})
+    return {"total_changed_bytes": total_changed, "ranges": ranges, "ranges_truncated": len(ranges) >= limit and total_changed > sum(item["length"] for item in ranges), "detail_bytes_limit": 4096, "details_truncated": detail_truncated or any(item["detail_truncated"] for item in ranges)}

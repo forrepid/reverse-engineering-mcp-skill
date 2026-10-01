@@ -79,11 +79,48 @@ yalnız sistemde bulunan allowlist provider'ları `shell=False` ve timeout ile
 python scripts/re_cli.py pe-deep <sample> [--output <json>]
 ~~~
 
-PE declared entry point'i RVA/VA/file-offset/section ile eşler; header/section/
-certificate/overlay/EOF sınırlarını, PDB/Rich/packer/runtime/dongle marker'larını,
+PE declared entry point'i RVA/VA/file-offset/section ile eşler; salt-okunur
+statik OEP hipotezlerini kanıt ve açıklanabilir heuristik skorlarla listeler;
+TLS callback dizisini mimariye göre statik ayrıştırıp callback VA/RVA/file-offset
+adaylarını gösterir (en fazla 128; yalnız file-backed eşleme). Bu adresler
+çalıştırılma kanıtı değildir. Load Configuration/Guard CF işaretlerini ve
+bounded function-table içinden entry-point üyeliğini, import edilmiş bellek/
+resolver API kategorilerini, packer marker ve yüksek entropy section sinyallerini
+ayrı ayrı raporlar. Bunlar call-site veya runtime kullanım kanıtı değildir;
+CFG metadata'sı da runtime enforcement gözlemi değildir. Hiçbir aday runtime
+doğrulanmış sayılmaz.
+Header/section/certificate/overlay/EOF sınırlarını, PDB/Rich/packer/runtime/dongle marker'larını,
 injection API gruplarını, obfuscation gerekçelerini ve yüksek entropy adaylarını
 raporlar. Declared entry point'i gerçek OEP veya entropy'yi encryption kanıtı
 olarak sunmaz.
+
+### `oep_static_candidates` (MCP)
+
+MCP istemcisinden bir PE örneği için salt-okunur, aday odaklı rapor alır:
+declared EP referansı, executable section hipotezleri, RVA/VA/file-offset,
+kanıt/güven, TLS callback'leri, statik CFG ve API korelasyon sinyalleri. Örnek çalıştırılmaz; MCP write tool'u
+sunulmaz ve hiçbir statik sonuç runtime OEP diye gösterilmez. Daha geniş TXT/JSON
+çıktı ve limitli CLI kullanımı için `pe-deep` komutu kullanılabilir.
+
+### `oep-runtime-verify`
+
+```text
+python scripts/re_cli.py oep-runtime-verify <sample> --plan <approved-plan.json>
+  --trace <trace-index.json> --dump <reconstructed.exe>
+  --attestation <broker-attestation.json> --broker-public-key <pinned.pub>
+  --trusted-broker-id <id> --confirm-plan-sha256 <approved-plan-sha256>
+  [--output <json>]
+```
+
+Yalnız kullanıcı tarafından ayrıca onaylanmış, sıfır-egress izole çalışma için
+broker'ın imzaladığı kanıt paketini doğrular. Plan image/snapshot kimliği ve
+sonlu kaynak limitleri taşımalıdır. Ed25519 broker anahtarı operator tarafından
+out-of-band pinlenir. Bu komut VM başlatmaz veya örnek çalıştırmaz; canlı broker
+adapter'ı henüz entegre değildir. `oep_display`, doğrulanmış runtime OEP
+VA/RVA/file offset'ini veya açıkça NOT VERIFIED durumunu gösterir. Tam sözleşme:
+`references/runtime-oep-evidence.md`. Eksik/loss'lu kanıt `inconclusive`, hash,
+plan veya signature uyuşmazlığı `rejected` olur; yalnız tüm kapılar geçerse
+`verified` döner. Başarı dışı sonuçta CLI exit code 2 kullanır.
 
 ### `inventory`
 
@@ -304,6 +341,18 @@ Export edilmiş pseudocode'u düzenlemek binary veya IDB'yi patch etmez.
 
 ## IDA, Ghidra ve sandbox planları
 
+### `host-coverage`
+
+~~~text
+python scripts/re_cli.py host-coverage --host ida|ghidra
+  [--endpoint <loopback-url>] [--tool <name> ...] [--resource <uri> ...]
+  [--profile current|read_only|read_write] [--output <json>]
+~~~
+
+Caller'ın gerçek MCP discovery girdilerinden host capability ve tool policy
+raporu çıkarır. Endpoint verilirse loopback olmalıdır; capability isimlerini
+server/version doğrulaması olmadan güvenilir kabul etmez.
+
 ### `hosts`
 
 ~~~text
@@ -478,6 +527,29 @@ doğrular. Yalnız tanımlı `RE_MCP_*` isimleri kabul edilir; `--env` aynı ism
 env-file değerinden sonra uygulanır. Dosyayı process environment'ına yüklemez ve
 client config yazmaz.
 
+### `settings`
+
+~~~text
+python scripts/re_cli.py settings show
+python scripts/re_cli.py settings set <key> <integer>
+python scripts/re_cli.py settings adjust <key> <signed-delta>
+python scripts/re_cli.py settings reset [key]
+~~~
+
+`show`, kaydedilmiş ve etkin değerleri kullanıcıya gösterir. `adjust` pozitif
+delta ile artırır, negatif delta ile azaltır. Desteklenen anahtarlar:
+`max_file_bytes`, `max_region_bytes`, `max_scan_bytes`,
+`provider_timeout_seconds`, `max_provider_output_bytes`, `max_archive_members`,
+`max_archive_expanded_bytes`, `max_archive_member_ratio`,
+`archive_timeout_seconds`. Ayarlar kullanıcı
+profilindeki `reverse-engineering-companion/settings.json` dosyasına atomik
+yazılır. Process environment değişkeni, kaydedilmiş değerin; kaydedilmiş değer
+de varsayılanın önüne geçer. Kaydedilmiş ayar MCP süreç yeniden başlatılınca
+etkinleşir; geçersiz aralık ve birbirini aşan dosya/bölge sınırları reddedilir.
+Örnek: `settings adjust max_scan_bytes 16777216` 16 MiB artırır; azaltmak için
+eksi değer kullanın. `settings reset max_scan_bytes` yalnız o override'ı siler;
+`settings reset` tüm kaydedilmiş override'ları kaldırır.
+
 ### `doctor`
 
 ~~~text
@@ -512,6 +584,8 @@ python scripts/re_cli.py client-configs --output-dir <dir>
   [--idalib-mcp <idalib-mcp.exe>] [--clients codex zed kimi]
   [--ghidra-bridge <bridge_mcp_ghidra.py>]
   [--ghidra-server http://127.0.0.1:8080/]
+  [--host-profile current|read_only|read_write] [--ida-profile-file <ida-tools.txt>]
+  [--confirm-read-write]
   [--max-workers 4] [--env-file <path>] [--env NAME=VALUE ...]
   [--force]
 ~~~
@@ -523,6 +597,19 @@ loopback URL ister. `--force` yalnız renderer output dizinindeki önceden
 üretilmiş config'leri değiştirir. Renderer dokuz güvenli
 companion değişkenini her client'ın `env` alanına, manifest'e ise
 `companion_environment` olarak yazar. `.env` otomatik yüklenmez.
+`current` upstream tool davranışını korur. `read_only`, IDA için
+`--ida-profile-file` allowlist'ini zorunlu kılar ve Ghidra'da reviewed bridge'in
+salt-okunur araç filtresini etkinleştirir. `read_write` yalnız IDA/Ghidra
+anotasyonlarını (rename/comment/type) read araçlarına ekler; etkinleştirmek için
+`--confirm-read-write` gerekir. IDA whitelist'i bilinen READ/ANNOTATE araçları
+dışında bir isim içerirse üretim reddedilir. Ghidra'da aynı kısıtlı bridge
+profili kullanılır. Patch, debugger, arbitrary Python ve dynamic araçlar bu
+profilden açılmaz. İstemci config'inde tool approval prompt korunur; onay her
+write çağrısında IDE/MCP istemcisinde verilir. Unknown host tools fail-closed.
+Ghidra bearer token'ı config dosyasına yazılmaz; `RE_GHIDRA_TOKEN` istemci
+ortam değişkeninden aktarılır.
+Bu host profili companion MCP'nin kendi `RE_MCP_MODE=read_only` sınırını
+değiştirmez.
 
 ## Companion MCP
 

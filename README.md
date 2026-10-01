@@ -120,6 +120,7 @@ Başlıca komut grupları:
 - Provider: `tools`, `provider-run`
 - İstemci: `client-profiles`, `client-configs`
 - Ortam: `env-show`, `env-check`
+- Kalıcı limit ayarları: `settings show|set|adjust|reset`
 - Hazırlık: `doctor`
 
 Her komutun tam sözdizimi, parametreleri, yaptığı işlem ve yan etki sınırları

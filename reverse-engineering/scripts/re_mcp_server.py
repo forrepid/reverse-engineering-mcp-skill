@@ -9,11 +9,16 @@ from typing import Any
 
 from re_core.advanced_pe import analyze_pe_deep
 from re_core.advanced_workflows import execute_local_feature, local_feature_ids
+from re_core.adapters import GHIDRA_CAPABILITIES, IDA_CAPABILITIES, CapabilityProfile
+from re_core.broker_config import load_broker_config
 from re_core.client_configs import client_profiles
 from re_core.environment import (
     EnvironmentConfigError,
     environment_contract as build_environment_contract,
     load_runtime_environment,
+    read_saved_settings,
+    save_setting,
+    settings_path,
 )
 from re_core.external import provider_status, run_provider
 from re_core.feature_catalog import (
@@ -30,6 +35,7 @@ from re_core.selection import (
     inspect_file_region,
     inspect_text_lines,
 )
+from re_core.sandbox import create_sandbox_plan
 from re_core.source_edit import create_source_edit_plan
 from re_core.transforms import entropy_windows, scan_single_byte_xor
 
@@ -42,7 +48,7 @@ def server_status() -> dict[str, Any]:
         "name": "reverse-engineering-companion",
         "transport": "stdio",
         "mcp_importable": importlib.util.find_spec("mcp") is not None,
-        "tool_count": 19,
+        "tool_count": 24,
         "default_mode": "read_only",
         "writes_exposed": False,
         "unsafe_tools_exposed": False,
@@ -70,12 +76,70 @@ def build_server() -> Any:
     @mcp.tool()
     def classify_artifact(sample: str) -> dict[str, Any]:
         """Classify a local artifact from magic, structure, container, and bounded indicators."""
-        return classify_file(runtime.validate_file(sample)).to_dict()
+        return classify_file(runtime.validate_file(sample), max_file_size=runtime.max_file_bytes).to_dict()
 
     @mcp.tool()
     def deep_pe_triage(sample: str) -> dict[str, Any]:
-        """Map PE entry point, boundaries, indicators, injection primitives, and obfuscation candidates."""
-        return analyze_pe_deep(runtime.validate_file(sample))
+        """Map PE entry point, static OEP hypotheses, boundaries, and triage indicators without execution."""
+        return analyze_pe_deep(runtime.validate_file(sample), max_file_size=runtime.max_file_bytes, max_scan_bytes=runtime.max_scan_bytes)
+
+    @mcp.tool()
+    def oep_static_candidates(sample: str) -> dict[str, Any]:
+        """Rank static PE entry-point hypotheses; never executes or runtime-verifies a sample."""
+        result = analyze_pe_deep(
+            runtime.validate_file(sample),
+            max_file_size=runtime.max_file_bytes,
+            max_scan_bytes=runtime.max_scan_bytes,
+        )
+        return {
+            "source": result["source"],
+            "architecture": result["pe"].get("architecture"),
+            "image_base": result["pe"].get("image_base"),
+            "declared_entry_point": result["declared_entry_point"],
+            "oep_result": result["oep_result"],
+            "oep_analysis": result["oep_analysis"],
+            "mutation_performed": False,
+        }
+
+    @mcp.tool()
+    def oep_runtime_plan(
+        sample: str,
+        provider: str,
+        timeout_seconds: int = 300,
+        network: str = "blocked",
+        image_digest: str = "",
+        snapshot_id: str = "",
+        cpu_cores: int = 2,
+        memory_mb: int = 2048,
+        disk_mb: int = 4096,
+    ) -> dict[str, Any]:
+        """Create a bounded isolated-runtime OEP plan only; never submits or executes the sample."""
+        source = runtime.validate_file(sample)
+        plan = create_sandbox_plan(
+            source,
+            provider=provider,
+            timeout_seconds=timeout_seconds,
+            network=network,
+            image_digest=image_digest or None,
+            snapshot_id=snapshot_id or None,
+            cpu_cores=cpu_cores,
+            memory_mb=memory_mb,
+            disk_mb=disk_mb,
+        )
+        broker = load_broker_config().public_status()
+        plan["broker_capture_contract"] = {
+            **plan["broker_capture_contract"],
+            "status": broker["status"],
+            "provider": broker["provider"],
+            "broker_id": broker["broker_id"],
+            "capture_adapter": "not_implemented",
+            "continuous_capture": False,
+            "submission_enabled": False,
+            "live_capture_ready": False,
+            "note": "Plan preview only. No sample submission or execution is available through this MCP tool.",
+        }
+        plan["status"] = "plan_only"
+        return plan
 
     @mcp.tool()
     def inspect_binary_selection(
@@ -158,6 +222,39 @@ def build_server() -> Any:
         return build_environment_contract()
 
     @mcp.tool()
+    def settings_read() -> dict[str, Any]:
+        """Read saved overrides and currently effective runtime limits."""
+        return {
+            "path": str(settings_path()),
+            "precedence": "process environment > saved settings > defaults",
+            "saved_values": read_saved_settings(),
+            "effective_values": load_runtime_environment().to_dict(),
+        }
+
+    @mcp.tool()
+    def settings_update(key: str, value: int | None = None, delta: int | None = None) -> dict[str, Any]:
+        """Persist one allowlisted runtime limit; provide exactly one of value or delta."""
+        if (value is None) == (delta is None):
+            raise ValueError("provide exactly one of value or delta")
+        if value is not None:
+            saved_path = save_setting(key, value)
+        else:
+            current = read_saved_settings().get(
+                key, load_runtime_environment().to_dict().get(key)
+            )
+            if not isinstance(current, (int, str)) or not str(current).isdigit():
+                raise ValueError(f"setting is not adjustable: {key}")
+            if delta is None:
+                raise ValueError("delta is required")
+            saved_path = save_setting(key, int(current) + int(delta))
+        return {
+            "path": str(saved_path),
+            "saved_values": read_saved_settings(),
+            "effective_values": load_runtime_environment().to_dict(),
+            "restart_required": True,
+        }
+
+    @mcp.tool()
     def feature_workflow_plan(
         feature_id: str,
         host: str,
@@ -226,7 +323,38 @@ def build_server() -> Any:
             source,
             second_sample=other,
             max_scan_bytes=runtime.max_scan_bytes,
+            max_archive_members=runtime.max_archive_members,
+            max_archive_expanded_bytes=runtime.max_archive_expanded_bytes,
+            max_archive_member_ratio=runtime.max_archive_member_ratio,
+            archive_timeout_seconds=runtime.archive_timeout_seconds,
+            max_file_bytes=runtime.max_file_bytes,
+            host_coverage=None,
         )
+
+    @mcp.tool()
+    def host_capability_coverage(
+        host: str,
+        tools: list[str],
+        resources: list[str] | None = None,
+        endpoint: str = "",
+    ) -> dict[str, Any]:
+        """Compute host coverage only from caller-supplied live discovery results."""
+        if host not in {"ida", "ghidra"}:
+            raise ValueError("host must be ida or ghidra")
+        profile = CapabilityProfile(
+            host,
+            IDA_CAPABILITIES if host == "ida" else GHIDRA_CAPABILITIES,
+            endpoint=endpoint,
+            discovered_tools=set(tools),
+            discovered_resources=set(resources or []),
+        )
+        profile.require_loopback()
+        payload = profile.coverage_report()
+        payload["available_tool_policy"] = {
+            name: operation.value if (operation := profile.classify(name)) is not None else "unknown"
+            for name in sorted(profile.discovered_tools)
+        }
+        return payload
 
     @mcp.tool()
     def system_readiness(
@@ -234,6 +362,7 @@ def build_server() -> Any:
         idalib_mcp: str = "",
         ghidra_home: str = "",
         ghidra_bridge: str = "",
+        probe_ida: bool = False,
     ) -> dict[str, Any]:
         """Audit local dependencies and explicit IDA/Ghidra paths without launching hosts."""
         return build_readiness_report(
@@ -242,6 +371,7 @@ def build_server() -> Any:
             idalib_mcp=idalib_mcp or None,
             ghidra_home=ghidra_home or None,
             ghidra_bridge=ghidra_bridge or None,
+            probe_ida=probe_ida,
         )
 
     @mcp.tool()
