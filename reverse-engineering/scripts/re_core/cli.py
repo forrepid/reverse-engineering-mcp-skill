@@ -300,6 +300,7 @@ def _cmd_oep_runtime_verify(args: argparse.Namespace) -> int:
         args.broker_public_key,
         trusted_broker_id=args.trusted_broker_id,
         confirm_plan_sha256=args.confirm_plan_sha256,
+        expected_broker_public_key_sha256=args.expected_broker_public_key_sha256,
     )
     _emit_json(result, args.output, label="oep_runtime_verification")
     return 0 if result["status"] == "verified" else 2
@@ -921,6 +922,10 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_oep.add_argument("--attestation", required=True, help="Ed25519-signed broker evidence manifest")
     runtime_oep.add_argument("--broker-public-key", required=True, help="Operator-pinned Ed25519 public key file")
     runtime_oep.add_argument("--trusted-broker-id", required=True)
+    runtime_oep.add_argument(
+        "--expected-broker-public-key-sha256",
+        help="Optional operator-pinned SHA-256 of raw Ed25519 public key bytes",
+    )
     runtime_oep.add_argument("--confirm-plan-sha256", required=True, help="Explicit confirmation of the exact approved plan digest")
     runtime_oep.add_argument("--output")
     runtime_oep.set_defaults(handler=_cmd_oep_runtime_verify)

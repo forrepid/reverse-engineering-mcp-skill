@@ -146,12 +146,19 @@ class RuntimeOepVerificationTests(unittest.TestCase):
             "plan_hash": plan_hash,
         }
 
-    def _verify(self, bundle: dict[str, Path | str], *, plan_hash: str | None = None) -> dict[str, object]:
+    def _verify(
+        self,
+        bundle: dict[str, Path | str],
+        *,
+        plan_hash: str | None = None,
+        pinned_key_hash: str | None = None,
+    ) -> dict[str, object]:
         return verify_runtime_oep_evidence(
             bundle["sample"], bundle["plan"], bundle["trace"], bundle["dump"],
             bundle["attestation"], bundle["key"],
             trusted_broker_id="lab-broker-01",
             confirm_plan_sha256=plan_hash or str(bundle["plan_hash"]),
+            expected_broker_public_key_sha256=pinned_key_hash,
         )
 
     def test_verifies_complete_signed_isolated_trace_and_dump(self) -> None:
@@ -172,6 +179,13 @@ class RuntimeOepVerificationTests(unittest.TestCase):
         self.assertEqual(wrong_plan["status"], "rejected")
         self.assertEqual(tampered["status"], "rejected")
         self.assertFalse(tampered["runtime_verified"])
+
+    def test_rejects_signing_key_that_does_not_match_operator_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = self._bundle(Path(temporary))
+            mismatch = self._verify(bundle, pinned_key_hash="0" * 64)
+        self.assertEqual(mismatch["status"], "rejected")
+        self.assertIn("pinned SHA-256", mismatch["reasons"][0])
 
     def test_keeps_result_inconclusive_on_event_loss_or_missing_transfer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

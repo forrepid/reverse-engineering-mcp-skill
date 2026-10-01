@@ -36,6 +36,7 @@ from re_core.selection import (
     inspect_text_lines,
 )
 from re_core.sandbox import create_sandbox_plan
+from re_core.runtime_oep import verify_runtime_oep_evidence
 from re_core.source_edit import create_source_edit_plan
 from re_core.transforms import entropy_windows, scan_single_byte_xor
 
@@ -48,7 +49,7 @@ def server_status() -> dict[str, Any]:
         "name": "reverse-engineering-companion",
         "transport": "stdio",
         "mcp_importable": importlib.util.find_spec("mcp") is not None,
-        "tool_count": 24,
+        "tool_count": 25,
         "default_mode": "read_only",
         "writes_exposed": False,
         "unsafe_tools_exposed": False,
@@ -140,6 +141,30 @@ def build_server() -> Any:
         }
         plan["status"] = "plan_only"
         return plan
+
+    @mcp.tool()
+    def oep_runtime_verify(
+        sample: str,
+        plan: str,
+        trace: str,
+        dump: str,
+        attestation: str,
+        broker_public_key: str,
+        trusted_broker_id: str,
+        confirm_plan_sha256: str,
+        expected_broker_public_key_sha256: str,
+    ) -> dict[str, Any]:
+        """Verify user-approved broker evidence and a pinned Ed25519 key; reads files only."""
+        paths = [
+            runtime.validate_file(path)
+            for path in (sample, plan, trace, dump, attestation, broker_public_key)
+        ]
+        return verify_runtime_oep_evidence(
+            *paths,
+            trusted_broker_id=trusted_broker_id,
+            confirm_plan_sha256=confirm_plan_sha256,
+            expected_broker_public_key_sha256=expected_broker_public_key_sha256,
+        )
 
     @mcp.tool()
     def inspect_binary_selection(

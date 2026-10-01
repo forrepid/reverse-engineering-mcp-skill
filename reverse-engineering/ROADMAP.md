@@ -298,7 +298,9 @@ koşulda host'ta otomatik başlatılmaz.
 10. **M9.10 — MCP araç yüzeyi.** [~] `oep_static_candidates` artık açık
    `oep_result` (Runtime OEP NOT VERIFIED) alanını döndürür; `oep_runtime_plan`
    bounded plan üretip broker readiness durumunu verir ve hiçbir örneği
-   göndermez/çalıştırmaz. Ortak istemciler için read-only
+   göndermez/çalıştırmaz. `oep_runtime_verify` plan hash'i yanında operator
+   Ed25519 public-key hash pin'ini zorunlu tutarak kanıtı salt-okunur doğrular.
+   Ortak istemciler için read-only
    `oep_static_candidates` (scan/show/export) ve ayrı onay kapılı
    `oep_runtime_plan`, `oep_runtime_start`, `oep_runtime_status`,
    `oep_runtime_trace`, `oep_runtime_dump`, `oep_runtime_export` araçları.

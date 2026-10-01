@@ -84,6 +84,7 @@ def verify_runtime_oep_evidence(
     *,
     trusted_broker_id: str,
     confirm_plan_sha256: str,
+    expected_broker_public_key_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Verify signed, normalized evidence from an externally approved isolated run.
 
@@ -110,6 +111,14 @@ def verify_runtime_oep_evidence(
 
     if plan_hash.lower() != confirm_plan_sha256.lower():
         return {**_inconclusive("explicitly confirmed plan hash does not match the supplied plan"), "status": "rejected"}
+    try:
+        public_key_hash = _digest(_decode_public_key(key_data))
+    except ValueError as error:
+        return {**_inconclusive(str(error)), "status": "rejected"}
+    if expected_broker_public_key_sha256 is not None:
+        expected_key_hash = expected_broker_public_key_sha256.lower().removeprefix("sha256:")
+        if not re_full_sha256(expected_key_hash) or public_key_hash != expected_key_hash:
+            return {**_inconclusive("broker public key does not match the operator-pinned SHA-256 digest"), "status": "rejected"}
     if plan.get("approval_required") is not True:
         return {**_inconclusive("plan does not declare an approval gate"), "status": "rejected"}
     policy = plan.get("policy")

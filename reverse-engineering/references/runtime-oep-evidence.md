@@ -68,13 +68,15 @@ python scripts/re_cli.py oep-runtime-verify .\sample.exe `
   --attestation .\artifacts\broker-attestation.json `
   --broker-public-key .\trust\lab-broker-ed25519.pub `
   --trusted-broker-id lab-broker-01 `
+  --expected-broker-public-key-sha256 <sha256-of-raw-public-key-bytes> `
   --confirm-plan-sha256 <exact-approved-plan-sha256> `
   --output .\artifacts\runtime-oep.json
 ```
 
 The public key file may contain 32 raw bytes, 64 hexadecimal characters, or
 base64-encoded raw Ed25519 key bytes. The private key must not be on the
-analysis workstation. The CLI exits `0` only for `verified`; rejected/tampered
+analysis workstation. Supply the out-of-band raw-key SHA-256 pin when available;
+the MCP verifier requires it. The CLI exits `0` only for `verified`; rejected/tampered
 evidence or incomplete telemetry returns a nonzero exit and a JSON report.
 Signature verification uses the Ed25519 verify API from the pinned
 `cryptography` package; see the [Ed25519 signing and verification reference](https://cryptography.io/en/41.0.6/hazmat/primitives/asymmetric/ed25519/).

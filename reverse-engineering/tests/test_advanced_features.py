@@ -399,6 +399,7 @@ class FeatureAndMcpTests(unittest.TestCase):
         tool_names = {tool.name for tool in server._tool_manager.list_tools()}
         self.assertIn("oep_static_candidates", tool_names)
         self.assertIn("oep_runtime_plan", tool_names)
+        self.assertIn("oep_runtime_verify", tool_names)
         self.assertFalse(any(name in tool_names for name in (
             "oep_runtime_start", "oep_runtime_trace", "oep_runtime_dump", "oep_runtime_export"
         )))

@@ -109,6 +109,7 @@ python scripts/re_cli.py oep-runtime-verify <sample> --plan <approved-plan.json>
   --trace <trace-index.json> --dump <reconstructed.exe>
   --attestation <broker-attestation.json> --broker-public-key <pinned.pub>
   --trusted-broker-id <id> --confirm-plan-sha256 <approved-plan-sha256>
+  [--expected-broker-public-key-sha256 <sha256-of-raw-key>]
   [--output <json>]
 ```
 
