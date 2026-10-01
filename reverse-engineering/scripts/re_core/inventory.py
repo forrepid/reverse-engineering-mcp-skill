@@ -8,9 +8,18 @@ from .analyzers import StaticAnalyzer
 from .models import utc_now
 
 
-def build_binary_inventory(path: str | Path) -> dict[str, Any]:
+def build_binary_inventory(
+    path: str | Path,
+    *,
+    max_file_bytes: int = 512 * 1024 * 1024,
+    max_scan_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, Any]:
     """Build dependency evidence without claiming full SBOM compliance."""
-    result = StaticAnalyzer(max_strings=256).analyze(path)
+    result = StaticAnalyzer(
+        max_file_size=max_file_bytes,
+        max_scan_bytes=max_scan_bytes,
+        max_strings=256,
+    ).analyze(path)
     dependencies = []
     for library in result.imports:
         dependencies.append(

@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "capstone==5.0.9",
+  "cryptography==49.0.0",
   "lief==0.17.6",
   "mcp==1.28.1",
   "pefile==2024.8.26",
@@ -25,6 +26,7 @@ dev = [
 [project.scripts]
 re-cli = "re_core.cli:main"
 re-mcp-server = "re_mcp_server:main"
+re-dashboard = "re_core.dashboard:main"
 
 [tool.setuptools]
 package-dir = {"" = "scripts"}
@@ -32,6 +34,9 @@ py-modules = ["re_cli", "re_mcp_server"]
 
 [tool.setuptools.packages.find]
 where = ["scripts"]
+
+[tool.setuptools.package-data]
+re_core = ["dashboard_static/*"]
 
 [tool.ruff]
 line-length = 100

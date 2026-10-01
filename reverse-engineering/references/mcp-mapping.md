@@ -72,3 +72,22 @@ contract. A live host integration should:
 3. classify each operation as read, annotate, patch, debug, or dynamic;
 4. expose unavailable capabilities honestly;
 5. log request IDs and bounded response metadata without sample secrets.
+### Runtime OEP
+
+- `oep_static_candidates(sample)`: read-only PE OEP hypothesis report; explicitly
+  returns `oep_result` with `Runtime OEP: NOT VERIFIED` until signed runtime
+  evidence is verified.
+- `oep_runtime_plan(sample, provider, ...)`: returns a bounded plan and broker
+  configuration status only. It does not submit, start a VM, or execute samples.
+- `oep_runtime_status(task_id)`: when CAPE is configured, reads status for one
+  decimal task ID using GET only. It never claims a runtime OEP.
+- `oep_runtime_start(...)`: registered only when CAPE submission is explicitly
+  enabled and operator machine/image/snapshot/blocked-network mappings are
+  present. Requires the exact `SUBMIT <plan-sha256>` confirmation string and
+  matching sample hash; creates one CAPE task. CAPE configuration still must
+  enforce isolation. The result stays `Runtime OEP: NOT VERIFIED`.
+- `oep_runtime_verify(...)`: imports evidence only and requires the confirmed
+  plan digest, trusted broker ID, and operator-pinned Ed25519 key digest.
+- Runtime trace/dump/export MCP tools remain unavailable until a broker-specific
+  capture/signing adapter and approval protocol are implemented. CAPE's ordinary
+  reports are not accepted as signed OEP evidence.

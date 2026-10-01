@@ -8,11 +8,40 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .adapters import IDA_CAPABILITIES, OperationClass
 from .environment import environment_contract, resolve_config_environment
 
 
 class ClientConfigError(RuntimeError):
     """Raised when a portable MCP client configuration is invalid."""
+
+
+def _validate_ida_tool_profile(profile_path: str | Path, host_profile: str) -> None:
+    source = Path(profile_path).expanduser()
+    if not source.is_file():
+        raise ClientConfigError("IDA profile must identify an existing reviewed tool whitelist")
+    selected_tools = {
+        line.strip()
+        for line in source.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    known_classes = {
+        name: capability.operation_class
+        for capability in IDA_CAPABILITIES
+        for name in capability.upstream_names
+    }
+    allowed_classes = (
+        {OperationClass.READ}
+        if host_profile == "read_only"
+        else {OperationClass.READ, OperationClass.ANNOTATE}
+    )
+    invalid = sorted(
+        name for name in selected_tools if known_classes.get(name) not in allowed_classes
+    )
+    if not selected_tools or invalid:
+        raise ClientConfigError(
+            f"IDA {host_profile} profile contains unknown or disallowed tools: {invalid or ['<empty>']}"
+        )
 
 
 @dataclass(frozen=True)
@@ -134,6 +163,8 @@ def _validate_inputs(
     ghidra_bridge: str | Path | None,
     ghidra_server: str,
     max_workers: int,
+    host_profile: str,
+    confirm_read_write: bool = False,
 ) -> tuple[Path, Path, Path | None, Path | None]:
     python_path = Path(python_executable).expanduser().resolve()
     companion_path = Path(companion_script).expanduser().resolve()
@@ -145,6 +176,7 @@ def _validate_inputs(
         if ghidra_bridge is not None
         else None
     )
+    read_only_bridge = False
     if not python_path.is_file():
         raise ClientConfigError(f"Python executable does not exist: {python_path}")
     if not companion_path.is_file():
@@ -161,6 +193,8 @@ def _validate_inputs(
             raise ClientConfigError(f"Ghidra MCP bridge does not exist: {ghidra_path}")
         if ghidra_path.name != "bridge_mcp_ghidra.py":
             raise ClientConfigError("Ghidra bridge basename must be bridge_mcp_ghidra.py")
+        bridge_source = ghidra_path.read_text(encoding="utf-8")
+        read_only_bridge = "def _filter_tools(" in bridge_source and 'choices=["current", "read_only", "read_write"]' in bridge_source
         parsed = urlparse(ghidra_server)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ClientConfigError("ghidra_server must be an absolute HTTP(S) URL")
@@ -170,6 +204,14 @@ def _validate_inputs(
             loopback = parsed.hostname.lower() == "localhost"
         if not loopback:
             raise ClientConfigError("Ghidra MCP server must use a loopback host")
+    if host_profile not in {"current", "read_only", "read_write"}:
+        raise ClientConfigError("host_profile must be current, read_only, or read_write")
+    if host_profile == "read_write" and not confirm_read_write:
+        raise ClientConfigError("read_write requires explicit --confirm-read-write opt-in")
+    if host_profile == "read_write" and idalib_path is None and ghidra_path is None:
+        raise ClientConfigError("read_write requires at least one configured IDA or Ghidra host")
+    if ghidra_path is not None and host_profile in {"read_only", "read_write"} and not read_only_bridge:
+        raise ClientConfigError("Ghidra restricted profile requires the reviewed read_only/read_write filtered bridge")
     if not 1 <= max_workers <= 32:
         raise ClientConfigError("max_workers must be between 1 and 32")
     return python_path, companion_path, idalib_path, ghidra_path
@@ -183,6 +225,10 @@ def _server_commands(
     ghidra_server: str,
     max_workers: int,
     environment: dict[str, str],
+    host_profile: str,
+    confirm_read_write: bool = False,
+    ida_profile_path: str | None = None,
+    ghidra_token_env: str = "RE_GHIDRA_TOKEN",
 ) -> dict[str, dict[str, Any]]:
     servers: dict[str, dict[str, Any]] = {
         "reverse-engineering-companion": {
@@ -194,12 +240,13 @@ def _server_commands(
     if idalib_path is not None:
         servers["ida-pro-idalib"] = {
             "command": str(idalib_path),
-            "args": ["--stdio", "--max-workers", str(max_workers)],
+            "args": ["--stdio", "--max-workers", str(max_workers)] + (["--profile", ida_profile_path] if ida_profile_path else []),
         }
     if ghidra_path is not None:
         servers["ghidra-mcp"] = {
             "command": str(python_path),
-            "args": [str(ghidra_path), "--ghidra-server", ghidra_server],
+            "args": [str(ghidra_path), "--ghidra-server", ghidra_server] + (["--profile", host_profile] if host_profile in {"read_only", "read_write"} else []),
+            "env": {ghidra_token_env: f"${{{ghidra_token_env}}}"},
         }
     return servers
 
@@ -278,8 +325,16 @@ def render_client_config(
     max_workers: int = 4,
     env_assignments: Sequence[str] = (),
     env_file: str | Path | None = None,
+    host_profile: str = "current",
+    confirm_read_write: bool = False,
+    ida_profile_path: str | None = None,
+    ghidra_token_env: str = "RE_GHIDRA_TOKEN",
 ) -> str:
     profile = _profile(client)
+    if idalib_mcp is not None and host_profile in {"read_only", "read_write"}:
+        if not ida_profile_path:
+            raise ClientConfigError("restricted IDA profile requires --ida-profile-file")
+        _validate_ida_tool_profile(ida_profile_path, host_profile)
     python_path, companion_path, idalib_path, ghidra_path = _validate_inputs(
         python_executable,
         companion_script,
@@ -287,6 +342,8 @@ def render_client_config(
         ghidra_bridge,
         ghidra_server,
         max_workers,
+        host_profile,
+        confirm_read_write,
     )
     environment = resolve_config_environment(
         assignments=env_assignments,
@@ -300,6 +357,10 @@ def render_client_config(
         ghidra_server,
         max_workers,
         environment,
+        host_profile,
+        confirm_read_write,
+        ida_profile_path=ida_profile_path,
+        ghidra_token_env=ghidra_token_env,
     )
     if profile.format == "toml":
         return _codex_toml(servers)
@@ -324,11 +385,36 @@ def render_all_client_configs(
     env_assignments: Sequence[str] = (),
     env_file: str | Path | None = None,
     force: bool = False,
+    host_profile: str = "current",
+    confirm_read_write: bool = False,
+    ghidra_token: str | None = None,
+    ida_profile_path: str | None = None,
+    ghidra_token_env: str = "RE_GHIDRA_TOKEN",
 ) -> dict[str, Any]:
     selected = list(clients or [item.id for item in CLIENTS])
     if not selected or len(selected) != len(set(selected)):
         raise ClientConfigError("client selection must be non-empty and unique")
     profiles = [_profile(client) for client in selected]
+    if host_profile == "read_write" and not confirm_read_write:
+        raise ClientConfigError("read_write requires explicit --confirm-read-write opt-in")
+    if host_profile == "read_write" and idalib_mcp is None and ghidra_bridge is None:
+        raise ClientConfigError("read_write requires at least one configured IDA or Ghidra host")
+    if ghidra_bridge is not None and not ghidra_token:
+        raise ClientConfigError(f"{ghidra_token_env} must be provided to config generation; secret value is never written to generated files")
+    if ghidra_token is not None and len(ghidra_token) < 32:
+        raise ClientConfigError("Ghidra bearer token must contain at least 32 characters")
+    if idalib_mcp is not None and host_profile in {"read_only", "read_write"} and not ida_profile_path:
+        raise ClientConfigError("restricted IDA profile requires --ida-profile-file generated/reviewed for the installed ida-pro-mcp version")
+    if ida_profile_path is not None and not Path(ida_profile_path).expanduser().is_file():
+        raise ClientConfigError("ida_profile_path must identify an existing reviewed tool whitelist file")
+    if idalib_mcp is not None and host_profile in {"read_only", "read_write"}:
+        _validate_ida_tool_profile(ida_profile_path or "", host_profile)
+    if ghidra_bridge is not None and not ghidra_token:
+        raise ClientConfigError("Ghidra bearer token is required for bridge config generation; set RE_GHIDRA_TOKEN in process environment")
+    if ghidra_token and len(ghidra_token) < 32:
+        raise ClientConfigError("Ghidra bearer token must contain at least 32 characters")
+    if not ghidra_token_env or not all(character.isalnum() or character == "_" for character in ghidra_token_env):
+        raise ClientConfigError("ghidra_token_env must be a non-empty environment variable name")
     environment = resolve_config_environment(
         assignments=env_assignments,
         env_file=env_file,
@@ -358,6 +444,10 @@ def render_all_client_configs(
             ghidra_server=ghidra_server,
             max_workers=max_workers,
             env_assignments=normalized_assignments,
+            host_profile=host_profile,
+            confirm_read_write=confirm_read_write,
+            ida_profile_path=ida_profile_path,
+            ghidra_token_env=ghidra_token_env,
         )
         target.write_text(content, encoding="utf-8")
         outputs.append(
@@ -371,6 +461,8 @@ def render_all_client_configs(
     server_names = ["reverse-engineering-companion"]
     if idalib_mcp is not None:
         server_names.append("ida-pro-idalib")
+    if idalib_mcp is not None and ida_profile_path is not None:
+        outputs.append({"client": "shared", "path": str(ida_profile_path), "purpose": "idalib --profile whitelist"})
     if ghidra_bridge is not None:
         server_names.append("ghidra-mcp")
     manifest = {
@@ -378,11 +470,15 @@ def render_all_client_configs(
         "status": "generated-not-installed",
         "automatic_installation": False,
         "servers": server_names,
+        "host_profile": host_profile,
+        "read_write_opt_in": bool(host_profile == "read_write" and confirm_read_write),
+        "ghidra_authentication": "bearer-token-required; secret is not emitted",
         "companion_environment": environment,
         "outputs": outputs,
         "security": [
             "Review absolute executable and script paths before merging.",
             "Keep client trust and per-tool approval prompts enabled.",
+            "read_write permits reviewed annotation tools only; patch/debug/arbitrary code remain excluded.",
             "Project-level MCP files can execute local commands; trust the repository first.",
             "Generated fragments do not modify any client configuration automatically.",
             "The companion needs no secret; only documented RE_MCP_* values are rendered.",

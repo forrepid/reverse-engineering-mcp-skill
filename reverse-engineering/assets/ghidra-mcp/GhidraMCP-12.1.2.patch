@@ -1,19 +1,109 @@
 diff --git a/bridge_mcp_ghidra.py b/bridge_mcp_ghidra.py
+index c492562..e30f681 100644
 --- a/bridge_mcp_ghidra.py
 +++ b/bridge_mcp_ghidra.py
-@@ -57,6 +57,11 @@ def safe_post(endpoint: str, data: dict | str) -> str:
+@@ -7,6 +7,8 @@
+ # ///
+ 
+ import sys
++import os
++from pathlib import Path
+ import requests
+ import argparse
+ import logging
+@@ -22,6 +24,14 @@ mcp = FastMCP("ghidra-mcp")
+ 
+ # Initialize ghidra_server_url with default value
+ ghidra_server_url = DEFAULT_GHIDRA_SERVER
++ACTIVE_PROFILE = "current"
++
++
++def _auth_headers() -> dict:
++    token = os.environ.get("RE_GHIDRA_TOKEN", "").strip()
++    if not token:
++        raise RuntimeError("RE_GHIDRA_TOKEN is required to connect to the authenticated Ghidra plugin")
++    return {"Authorization": f"Bearer {token}"}
+ 
+ def safe_get(endpoint: str, params: dict = None) -> list:
+     """
+@@ -33,7 +43,7 @@ def safe_get(endpoint: str, params: dict = None) -> list:
+     url = urljoin(ghidra_server_url, endpoint)
+ 
+     try:
+-        response = requests.get(url, params=params, timeout=5)
++        response = requests.get(url, params=params, headers=_auth_headers(), timeout=5)
+         response.encoding = 'utf-8'
+         if response.ok:
+             return response.text.splitlines()
+@@ -46,9 +56,9 @@ def safe_post(endpoint: str, data: dict | str) -> str:
+     try:
+         url = urljoin(ghidra_server_url, endpoint)
+         if isinstance(data, dict):
+-            response = requests.post(url, data=data, timeout=5)
++            response = requests.post(url, data=data, headers=_auth_headers(), timeout=5)
+         else:
+-            response = requests.post(url, data=data.encode("utf-8"), timeout=5)
++            response = requests.post(url, data=data.encode("utf-8"), headers=_auth_headers(), timeout=5)
+         response.encoding = 'utf-8'
+         if response.ok:
+             return response.text.strip()
+@@ -57,6 +67,34 @@ def safe_post(endpoint: str, data: dict | str) -> str:
      except Exception as e:
          return f"Request failed: {str(e)}"
  
++
 +@mcp.tool()
 +def ghidra_health() -> list:
-+    """Check the loopback Ghidra plugin and report the active program name."""
++    """Read GhidraMCP plugin health and active Program over authenticated loopback HTTP."""
 +    return safe_get("health")
++
++
++def _filter_tools(profile: str) -> None:
++    read_only = {
++        "ghidra_health", "list_methods", "list_classes", "decompile_function",
++        "list_segments", "list_imports", "list_exports", "list_namespaces",
++        "list_data_items", "search_functions_by_name", "get_function_by_address",
++        "get_current_address", "get_current_function", "list_functions",
++        "disassemble_function", "xrefs_to", "xrefs_from", "function_xrefs",
++        "list_strings",
++    }
++    read_write = read_only | {
++        "rename_function", "rename_function_by_address", "rename_data",
++        "rename_variable", "set_comment", "set_decompiler_comment",
++        "set_disassembly_comment", "set_function_prototype",
++        "set_local_variable_type",
++    }
++    allowed = read_only if profile == "read_only" else read_write
++    tool_manager = getattr(mcp, "_tool_manager")
++    for tool_name in list(tool_manager._tools):
++        if tool_name not in allowed:
++            tool_manager._tools.pop(tool_name, None)
 +
  @mcp.tool()
  def list_methods(offset: int = 0, limit: int = 100) -> list:
      """
+@@ -291,6 +329,7 @@ def main():
+     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
+     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,
+                         help=f"Ghidra server URL, default: {DEFAULT_GHIDRA_SERVER}")
++    parser.add_argument("--profile", choices=["current", "read_only", "read_write"], default="current")
+     parser.add_argument("--mcp-host", type=str, default="127.0.0.1",
+                         help="Host to run MCP server on (only used for sse), default: 127.0.0.1")
+     parser.add_argument("--mcp-port", type=int,
+@@ -300,7 +339,10 @@ def main():
+     args = parser.parse_args()
+     
+     # Use the global variable to ensure it's properly updated
+-    global ghidra_server_url
++    global ghidra_server_url, ACTIVE_PROFILE
++    ACTIVE_PROFILE = args.profile
++    if ACTIVE_PROFILE in {"read_only", "read_write"}:
++        _filter_tools(ACTIVE_PROFILE)
+     if args.ghidra_server:
+         ghidra_server_url = args.ghidra_server
+     
 diff --git a/pom.xml b/pom.xml
+index 6452d96..43970a3 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -15,56 +15,56 @@
@@ -82,32 +172,291 @@ diff --git a/pom.xml b/pom.xml
        <systemPath>${project.basedir}/lib/Gui.jar</systemPath>
      </dependency>
 diff --git a/src/main/java/com/lauriewired/GhidraMCPPlugin.java b/src/main/java/com/lauriewired/GhidraMCPPlugin.java
+index 88583ba..81d3e79 100644
 --- a/src/main/java/com/lauriewired/GhidraMCPPlugin.java
 +++ b/src/main/java/com/lauriewired/GhidraMCPPlugin.java
-@@ -104,7 +104,15 @@ public class GhidraMCPPlugin extends Plugin {
+@@ -46,6 +46,8 @@ import ghidra.app.decompiler.ClangToken;
+ import ghidra.framework.options.Options;
+ 
+ import com.sun.net.httpserver.HttpExchange;
++import com.sun.net.httpserver.HttpContext;
++import com.sun.net.httpserver.Authenticator;
+ import com.sun.net.httpserver.HttpServer;
+ 
+ import javax.swing.SwingUtilities;
+@@ -53,6 +55,7 @@ import java.io.IOException;
+ import java.io.OutputStream;
+ import java.lang.reflect.InvocationTargetException;
+ import java.net.InetSocketAddress;
++import java.nio.charset.StandardCharsets;
+ import java.net.URLDecoder;
+ import java.nio.charset.StandardCharsets;
+ import java.util.*;
+@@ -67,6 +70,31 @@ import java.util.concurrent.atomic.AtomicBoolean;
+ )
+ public class GhidraMCPPlugin extends Plugin {
+ 
++    static Authenticator bearerAuthenticator(String token) {
++        return new Authenticator() {
++            @Override
++            public Result authenticate(HttpExchange exchange) {
++                String authorization = exchange.getRequestHeaders().getFirst("Authorization");
++                byte[] expected = ("Bearer " + token).getBytes(StandardCharsets.UTF_8);
++                byte[] supplied = authorization == null ? new byte[0]
++                        : authorization.getBytes(StandardCharsets.UTF_8);
++                if (!java.security.MessageDigest.isEqual(expected, supplied)) {
++                    exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
++                    return new Failure(401);
++                }
++                return new Success(new com.sun.net.httpserver.HttpPrincipal("mcp", "local"));
++            }
++        };
++    }
++
++    private static HttpContext createAuthenticatedContext(
++            HttpServer server, String path, String token,
++            com.sun.net.httpserver.HttpHandler handler) {
++        HttpContext context = server.createContext(path, handler);
++        context.setAuthenticator(bearerAuthenticator(token));
++        return context;
++    }
++
+     private HttpServer server;
+     private static final String OPTION_CATEGORY_NAME = "GhidraMCP HTTP Server";
+     private static final String PORT_OPTION_NAME = "Server Port";
+@@ -104,42 +132,50 @@ public class GhidraMCPPlugin extends Plugin {
              server = null;
          }
  
 -        server = HttpServer.create(new InetSocketAddress(port), 0);
-+        // The MCP bridge is local-only. Binding to loopback prevents the
-+        // unauthenticated analysis/mutation API from being exposed to the LAN.
 +        server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-+
-+        server.createContext("/health", exchange -> {
++        String configuredToken = System.getProperty("ghidra.mcp.token", "").trim();
++        if (configuredToken.isEmpty()) throw new IllegalStateException("Set -Dghidra.mcp.token before enabling GhidraMCP");
++        final String apiToken = configuredToken;
++        createAuthenticatedContext(server, "/health", apiToken, exchange -> {
 +            Program currentProgram = getCurrentProgram();
 +            String program = currentProgram == null ? "none" : currentProgram.getName();
 +            sendResponse(exchange, "status=ok\nprogram=" + program + "\n");
 +        });
  
          // Each listing endpoint uses offset & limit from query params:
-         server.createContext("/methods", exchange -> {
+-        server.createContext("/methods", exchange -> {
++        createAuthenticatedContext(server, "/methods", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+             sendResponse(exchange, getAllFunctionNames(offset, limit));
+         });
+ 
+-        server.createContext("/classes", exchange -> {
++        createAuthenticatedContext(server, "/classes", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+             sendResponse(exchange, getAllClassNames(offset, limit));
+         });
+ 
+-        server.createContext("/decompile", exchange -> {
++        createAuthenticatedContext(server, "/decompile", apiToken, exchange -> {
+             String name = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+             sendResponse(exchange, decompileFunctionByName(name));
+         });
+ 
+-        server.createContext("/renameFunction", exchange -> {
++        createAuthenticatedContext(server, "/renameFunction", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             String response = renameFunction(params.get("oldName"), params.get("newName"))
+                     ? "Renamed successfully" : "Rename failed";
+             sendResponse(exchange, response);
+         });
+ 
+-        server.createContext("/renameData", exchange -> {
++        createAuthenticatedContext(server, "/renameData", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             renameDataAtAddress(params.get("address"), params.get("newName"));
+             sendResponse(exchange, "Rename data attempted");
+         });
+ 
+-        server.createContext("/renameVariable", exchange -> {
++        createAuthenticatedContext(server, "/renameVariable", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             String functionName = params.get("functionName");
+             String oldName = params.get("oldName");
+@@ -148,42 +184,42 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, result);
+         });
+ 
+-        server.createContext("/segments", exchange -> {
++        createAuthenticatedContext(server, "/segments", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+             sendResponse(exchange, listSegments(offset, limit));
+         });
+ 
+-        server.createContext("/imports", exchange -> {
++        createAuthenticatedContext(server, "/imports", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+             sendResponse(exchange, listImports(offset, limit));
+         });
+ 
+-        server.createContext("/exports", exchange -> {
++        createAuthenticatedContext(server, "/exports", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+             sendResponse(exchange, listExports(offset, limit));
+         });
+ 
+-        server.createContext("/namespaces", exchange -> {
++        createAuthenticatedContext(server, "/namespaces", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+             sendResponse(exchange, listNamespaces(offset, limit));
+         });
+ 
+-        server.createContext("/data", exchange -> {
++        createAuthenticatedContext(server, "/data", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+             sendResponse(exchange, listDefinedData(offset, limit));
+         });
+ 
+-        server.createContext("/searchFunctions", exchange -> {
++        createAuthenticatedContext(server, "/searchFunctions", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             String searchTerm = qparams.get("query");
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+@@ -193,37 +229,37 @@ public class GhidraMCPPlugin extends Plugin {
+ 
+         // New API endpoints based on requirements
+         
+-        server.createContext("/get_function_by_address", exchange -> {
++        createAuthenticatedContext(server, "/get_function_by_address", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             String address = qparams.get("address");
+             sendResponse(exchange, getFunctionByAddress(address));
+         });
+ 
+-        server.createContext("/get_current_address", exchange -> {
++        createAuthenticatedContext(server, "/get_current_address", apiToken, exchange -> {
+             sendResponse(exchange, getCurrentAddress());
+         });
+ 
+-        server.createContext("/get_current_function", exchange -> {
++        createAuthenticatedContext(server, "/get_current_function", apiToken, exchange -> {
+             sendResponse(exchange, getCurrentFunction());
+         });
+ 
+-        server.createContext("/list_functions", exchange -> {
++        createAuthenticatedContext(server, "/list_functions", apiToken, exchange -> {
+             sendResponse(exchange, listFunctions());
+         });
+ 
+-        server.createContext("/decompile_function", exchange -> {
++        createAuthenticatedContext(server, "/decompile_function", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             String address = qparams.get("address");
+             sendResponse(exchange, decompileFunctionByAddress(address));
+         });
+ 
+-        server.createContext("/disassemble_function", exchange -> {
++        createAuthenticatedContext(server, "/disassemble_function", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             String address = qparams.get("address");
+             sendResponse(exchange, disassembleFunction(address));
+         });
+ 
+-        server.createContext("/set_decompiler_comment", exchange -> {
++        createAuthenticatedContext(server, "/set_decompiler_comment", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             String address = params.get("address");
+             String comment = params.get("comment");
+@@ -231,7 +267,7 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, success ? "Comment set successfully" : "Failed to set comment");
+         });
+ 
+-        server.createContext("/set_disassembly_comment", exchange -> {
++        createAuthenticatedContext(server, "/set_disassembly_comment", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             String address = params.get("address");
+             String comment = params.get("comment");
+@@ -239,7 +275,7 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, success ? "Comment set successfully" : "Failed to set comment");
+         });
+ 
+-        server.createContext("/rename_function_by_address", exchange -> {
++        createAuthenticatedContext(server, "/rename_function_by_address", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             String functionAddress = params.get("function_address");
+             String newName = params.get("new_name");
+@@ -247,7 +283,7 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, success ? "Function renamed successfully" : "Failed to rename function");
+         });
+ 
+-        server.createContext("/set_function_prototype", exchange -> {
++        createAuthenticatedContext(server, "/set_function_prototype", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             String functionAddress = params.get("function_address");
+             String prototype = params.get("prototype");
+@@ -268,7 +304,7 @@ public class GhidraMCPPlugin extends Plugin {
+             }
+         });
+ 
+-        server.createContext("/set_local_variable_type", exchange -> {
++        createAuthenticatedContext(server, "/set_local_variable_type", apiToken, exchange -> {
+             Map<String, String> params = parsePostParams(exchange);
+             String functionAddress = params.get("function_address");
+             String variableName = params.get("variable_name");
+@@ -309,7 +345,7 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, responseMsg.toString());
+         });
+ 
+-        server.createContext("/xrefs_to", exchange -> {
++        createAuthenticatedContext(server, "/xrefs_to", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             String address = qparams.get("address");
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+@@ -317,7 +353,7 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, getXrefsTo(address, offset, limit));
+         });
+ 
+-        server.createContext("/xrefs_from", exchange -> {
++        createAuthenticatedContext(server, "/xrefs_from", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             String address = qparams.get("address");
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+@@ -325,7 +361,7 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, getXrefsFrom(address, offset, limit));
+         });
+ 
+-        server.createContext("/function_xrefs", exchange -> {
++        createAuthenticatedContext(server, "/function_xrefs", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             String name = qparams.get("name");
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+@@ -333,7 +369,7 @@ public class GhidraMCPPlugin extends Plugin {
+             sendResponse(exchange, getFunctionXrefs(name, offset, limit));
+         });
+ 
+-        server.createContext("/strings", exchange -> {
++        createAuthenticatedContext(server, "/strings", apiToken, exchange -> {
+             Map<String, String> qparams = parseQueryParams(exchange);
+             int offset = parseIntOrDefault(qparams.get("offset"), 0);
+             int limit = parseIntOrDefault(qparams.get("limit"), 100);
 diff --git a/src/main/resources/Module.manifest b/src/main/resources/Module.manifest
+index 1aa8264..e69de29 100644
 --- a/src/main/resources/Module.manifest
 +++ b/src/main/resources/Module.manifest
 @@ -1,2 +0,0 @@
 -GHIDRA_MODULE_NAME=GhidraMCP
 -GHIDRA_MODULE_DESC=An HTTP server plugin for Ghidra
 diff --git a/src/main/resources/extension.properties b/src/main/resources/extension.properties
+index 3ca8018..28a8467 100644
 --- a/src/main/resources/extension.properties
 +++ b/src/main/resources/extension.properties
 @@ -2,5 +2,5 @@ name=GhidraMCP
@@ -116,5 +465,64 @@ diff --git a/src/main/resources/extension.properties b/src/main/resources/extens
  createdOn=2025-03-22
 -version=11.3.2
 -ghidraVersion=11.3.2
+\ No newline at end of file
 +version=12.1.2
 +ghidraVersion=12.1.2
+diff --git a/src/test/java/com/lauriewired/AppTest.java b/src/test/java/com/lauriewired/AppTest.java
+index 77b1a97..b816a5d 100644
+--- a/src/test/java/com/lauriewired/AppTest.java
++++ b/src/test/java/com/lauriewired/AppTest.java
+@@ -1,5 +1,11 @@
+ package com.lauriewired;
+ 
++import com.sun.net.httpserver.HttpServer;
++import java.net.InetSocketAddress;
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
+ import junit.framework.Test;
+ import junit.framework.TestCase;
+ import junit.framework.TestSuite;
+@@ -31,8 +37,39 @@ public class AppTest
+     /**
+      * Rigourous Test :-)
+      */
+-    public void testApp()
++    public void testBearerAuthenticatorRejectsMissingAndWrongTokensAndAcceptsValidToken()
+     {
+-        assertTrue( true );
++        HttpServer server = null;
++        try {
++            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
++            server.createContext("/health", exchange -> {
++                byte[] body = "status=ok".getBytes(java.nio.charset.StandardCharsets.UTF_8);
++                exchange.sendResponseHeaders(200, body.length);
++                try (java.io.OutputStream out = exchange.getResponseBody()) {
++                    out.write(body);
++                }
++            }).setAuthenticator(GhidraMCPPlugin.bearerAuthenticator("test-token"));
++            server.start();
++
++            HttpClient client = HttpClient.newHttpClient();
++            URI endpoint = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/health");
++            HttpRequest missing = HttpRequest.newBuilder(endpoint).GET().build();
++            HttpRequest wrong = HttpRequest.newBuilder(endpoint)
++                .header("Authorization", "Bearer wrong-token").GET().build();
++            HttpRequest valid = HttpRequest.newBuilder(endpoint)
++                .header("Authorization", "Bearer test-token").GET().build();
++
++            assertEquals(401, client.send(missing, HttpResponse.BodyHandlers.ofString()).statusCode());
++            assertEquals(401, client.send(wrong, HttpResponse.BodyHandlers.ofString()).statusCode());
++            HttpResponse<String> accepted = client.send(valid, HttpResponse.BodyHandlers.ofString());
++            assertEquals(200, accepted.statusCode());
++            assertEquals("status=ok", accepted.body());
++        }
++        catch (Exception exception) {
++            fail("HTTP bearer-auth integration test failed: " + exception);
++        }
++        finally {
++            if (server != null) server.stop(0);
++        }
+     }
+ }

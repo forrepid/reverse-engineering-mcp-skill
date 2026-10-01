@@ -96,6 +96,14 @@ def build_test_pe() -> bytes:
 
 
 class AnalyzerTests(unittest.TestCase):
+    def test_analyzer_respects_scan_limit_and_reports_partial_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            sample = Path(temp) / "large.bin"
+            sample.write_bytes(b"MZ" + b"A" * 100)
+            result = StaticAnalyzer(max_file_size=1024, max_scan_bytes=64).analyze(sample)
+        self.assertEqual(result.summary["scanned_bytes"], 64)
+        self.assertTrue(any("content scan limited" in item for item in result.limitations))
+
     def test_pe_sections_imports_strings_and_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             sample = Path(temp) / "fixture.exe"
@@ -202,9 +210,25 @@ class IntegrationContractTests(unittest.TestCase):
             sample = Path(temp) / "sample.bin"
             sample.write_bytes(b"safe fixture")
             plan = create_sandbox_plan(sample, provider="cape")
-        self.assertEqual(plan["status"], "not_submitted")
+        self.assertEqual(plan["status"], "plan_only")
+        self.assertFalse(plan["broker_capture_contract"]["submission_enabled"])
+        self.assertFalse(plan["broker_capture_contract"]["continuous_capture"])
         self.assertTrue(plan["approval_required"])
+        self.assertFalse(plan["runtime_oep"]["ready_for_broker_submission"])
         self.assertEqual(plan["policy"]["network"], "blocked")
+        with tempfile.TemporaryDirectory() as temp:
+            sample = Path(temp) / "sample.bin"
+            sample.write_bytes(b"safe fixture")
+            ready_plan = create_sandbox_plan(
+                sample,
+                provider="internal",
+                image_digest="ab" * 32,
+                snapshot_id="clean-snapshot",
+            )
+        self.assertTrue(ready_plan["runtime_oep"]["ready_for_broker_submission"])
+        self.assertEqual(ready_plan["resource_limits"]["max_trace_bytes"], 32 * 1024 * 1024)
+        with self.assertRaises(ValueError):
+            create_sandbox_plan(sample, provider="internal", image_digest="invalid")
 
     def test_host_discovery_is_loopback_only(self) -> None:
         with self.assertRaises(ValueError):

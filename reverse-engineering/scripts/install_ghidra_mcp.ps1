@@ -49,8 +49,15 @@ if ((Get-Item -LiteralPath $moduleManifest).Length -ne 0) {
 if ((Get-Content -Raw -LiteralPath $pluginSource) -notmatch 'InetSocketAddress\("127\.0\.0\.1", port\)') {
     throw 'The reviewed loopback-only plugin patch is missing.'
 }
+if ((Get-Content -Raw -LiteralPath $pluginSource) -notmatch 'ghidra\.mcp\.token') {
+    throw 'The reviewed bearer-token authentication patch is missing.'
+}
 if ((Get-Content -Raw -LiteralPath $bridge) -notmatch 'def ghidra_health\(') {
     throw 'The reviewed bridge health tool patch is missing.'
+}
+if ((Get-Content -Raw -LiteralPath $bridge) -notmatch 'def _filter_tools\(' -or
+    (Get-Content -Raw -LiteralPath $bridge) -notmatch 'choices=\["current", "read_only", "read_write"\]') {
+    throw 'The reviewed Ghidra read-only/read-write tool profile filter is missing.'
 }
 
 $jars = [ordered]@{
@@ -85,6 +92,14 @@ try {
     $env:Path = "$JavaHome\bin;$MavenHome\bin;$previousPath"
     & $maven -q -f (Join-Path $Source 'pom.xml') clean package
     if ($LASTEXITCODE -ne 0) { throw "Maven failed with exit code $LASTEXITCODE." }
+    $testReport = Join-Path $Source 'target\surefire-reports\com.lauriewired.AppTest.txt'
+    if (-not (Test-Path -LiteralPath $testReport -PathType Leaf)) {
+        throw 'Maven did not produce the GhidraMCP behavioral test report.'
+    }
+    $testSummary = Get-Content -Raw -LiteralPath $testReport
+    if ($testSummary -notmatch 'Tests run: 1, Failures: 0, Errors: 0') {
+        throw "GhidraMCP behavioral auth test did not pass: $testSummary"
+    }
 }
 finally {
     $env:JAVA_HOME = $previousJavaHome

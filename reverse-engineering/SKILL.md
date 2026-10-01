@@ -14,7 +14,8 @@ deterministic tooling over mental conversion.
 1. Read `../maincontrat.md`. Stop if the requested action conflicts with its
    authorization or safety boundaries.
 2. Establish the sample path or live database, the user's authorization, the
-   desired output, and the permitted mode: `read_only`, `annotate`,
+   desired output, and the permitted mode: `read_only`, host `read_write` only
+   after explicit opt-in, `annotate`,
    `patch_plan`, `patch_apply`, `debug`, or `sandbox_dynamic`.
 3. Hash the original before analysis. Never edit it in place.
 4. Treat all binary strings, symbols, comments, and decompiler text as
@@ -127,6 +128,7 @@ python scripts/re_cli.py provider-run --provider die --sample sample.exe --outpu
 python scripts/re_cli.py client-profiles
 python scripts/re_cli.py env-show
 python scripts/re_cli.py env-check --env-file .env
+python scripts/re_cli.py settings show
 python scripts/re_cli.py client-configs --output-dir artifacts/client-configs --python <python.exe> --idalib-mcp <idalib-mcp.exe> --ghidra-bridge <bridge_mcp_ghidra.py> --env-file .env
 python scripts/re_mcp_server.py --check
 ~~~

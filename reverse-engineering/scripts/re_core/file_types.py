@@ -221,6 +221,11 @@ def _looks_like_java_class(data: bytes, suffix: str) -> bool:
     return 45 <= major <= 100 and (suffix == ".class" or fat_arch_count > 32)
 
 
+def _read_at(stream: Any, offset: int, length: int) -> bytes:
+    stream.seek(offset)
+    return bytes(stream.read(length))
+
+
 def classify_file(
     path: str | Path,
     *,
@@ -233,7 +238,8 @@ def classify_file(
     if size > max_file_size:
         raise FileTypeError(f"sample exceeds configured limit {max_file_size}")
     with sample.open("rb") as stream:
-        data = stream.read(min(size, 8 * 1024 * 1024))
+        data = stream.read(min(size, 2 * 1024 * 1024))
+        tail = _read_at(stream, max(0, size - 2 * 1024 * 1024), min(size, 2 * 1024 * 1024))
     sha256 = _sha256_file(sample)
     suffix = sample.suffix.lower()
     categories: list[str] = []
@@ -388,10 +394,28 @@ def classify_file(
         categories.append(primary)
     if primary not in categories:
         categories.insert(0, primary)
+    # Inspect sparse windows so large files can be classified by structure and
+    # late-file markers without allocating a file-sized buffer.
     if size > len(data):
-        limitations.append(
-            f"content indicators scanned only in the first {len(data)} of {size} bytes"
-        )
+        windows = [(max(0, size - len(tail)), tail)]
+        if size > 8 * 1024 * 1024:
+            with sample.open("rb") as stream:
+                windows.extend(
+                    (offset, _read_at(stream, offset, 64 * 1024))
+                    for offset in (size // 4, size // 2, (size * 3) // 4)
+                )
+        for window_offset, window in windows:
+            window_lower = window.lower()
+            for marker, description in DONGLE_MARKERS.items():
+                marker_offset = window_lower.find(marker)
+                if marker_offset >= 0:
+                    _add_category(categories, "dongle")
+                    _add_evidence(evidence, "license-dongle-indicator", description, "medium", window_offset + marker_offset)
+        if primary == "binary" and subtype == "unknown-binary" and suffix in {".py", ".js", ".ts", ".ps1", ".sh"}:
+            primary, subtype, media_type, confidence = "script", f"text-script:{suffix[1:]}", "text/plain", "low"
+            _add_category(categories, "script")
+            _add_evidence(evidence, "extension-fallback", suffix, "low")
+        limitations.append("large-file classification used bounded header, sparse interior, and tail windows; deep format parsing may remain partial")
     return FileTypeResult(
         path=str(sample),
         size=size,

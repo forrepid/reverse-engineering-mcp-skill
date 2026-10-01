@@ -40,7 +40,9 @@ tek kanıt modelinde birleştiren modüler bir mühendislik becerisi oluşturmak
 7. Binary patch ve kaynak değişikliği önce mühürlü plan, sonra açık onay ve yeni çıktı ister; in-place yazma yasaktır.
 8. Bilinmeyen binary host üzerinde çalıştırılmaz. Dinamik analiz yalnız kayıtlı, izole ve snapshot'lı sandbox içinde yapılır.
 9. `py_eval`, debugger write, process injection, loader değiştirme ve otomatik örnek yürütme kapalıdır.
-10. Declared entry point gerçek/original OEP değildir; runtime OEP ancak onaylı izole trace/dump ile doğrulanır.
+10. Declared entry point gerçek/original OEP değildir. Statik OEP otomasyonu
+    yalnızca kanıtlı aday ve güven düzeyi üretir; runtime OEP ancak kullanıcı
+    onaylı izole trace/dump kapılarından geçerse doğrulanır.
 11. Yüksek entropy encryption kanıtı değildir; compression/packing/obfuscation olasılığı birlikte raporlanır.
 12. XOR taraması yalnız küçük, çevrimdışı byte dönüşüm analizi içindir; parola, lisans, kimlik bilgisi veya çevrimiçi hedef brute-force edilmez.
 13. Decompiled pseudocode özgün source code değildir; provenance ve yeniden derlenebilirlik sınırlaması korunur.
@@ -51,6 +53,7 @@ tek kanıt modelinde birleştiren modüler bir mühendislik becerisi oluşturmak
 | Mod | Varsayılan | İzin verilen | Ek kapı |
 |---|---:|---|---|
 | `read_only` | Evet | sınıflandırma, metadata, hex, string, import, disasm, decompile, seçim, tespit, karşılaştırma | Yok |
+| `read_write` | Hayır | read-only + allowlist edilmiş IDB/proje anotasyonu (isim, yorum, tip) | Config üretiminde `--confirm-read-write`; MCP client her write çağrısında tool approval prompt'u tutar |
 | `annotate` | Hayır | yorum, isim, tip, bookmark | IDB/proje yedeği + açık onay |
 | `patch_plan` | Hayır | expected/replacement byte planı ve etki önizlemesi | Özgün SHA-256 |
 | `patch_apply` | Hayır | yeni dosyaya byte patch/dönüşüm | Açık onay + plan/hash + yeni çıktı |
@@ -61,6 +64,8 @@ tek kanıt modelinde birleştiren modüler bir mühendislik becerisi oluşturmak
 `inject` iki ayrı kavramdır: injection tekniğini statik olarak tespit etmek
 `read_only` kapsamındadır; bir sürece kod/DLL enjekte etmek bu projenin otomatik
 araç yüzeyinde yasaktır. Dosyadaki byte değişimi ise ayrı, onay kapılı patch'tir.
+`read_write` profilinde patch, debugger, arbitrary Python ve sandbox/dynamic
+araçları açılmaz; bilinmeyen host araçları reddedilir.
 
 ## 5. Modüler mimari sözleşmesi
 
@@ -283,6 +288,164 @@ kapısı değiştiyse bu sözleşme de değişir.
 - M5 — lisansı uygun temiz corpus, semantic diff ve regresyon ölçütleri.
 - M6 — imzalı sürüm, SBOM, audit/telemetry ve kurumsal politika profilleri.
 - M7 — tamamlandı: sekiz istemci config renderer'ı, kullanıcı README'si ve ayrıntılı komut referansı.
+
+## 9.1 Takip hedefi — kapsam boşlukları
+
+Bu maddeler ayrı takip hedefinde tutulur; mevcut ayarlar çalışmasıyla karıştırılmaz.
+
+- [x] IDA upstream tool whitelist'i ve Ghidra filtered bridge üzerinden
+  `read_only` profili istemci renderer'ına uygulanır; `current` varsayılanı
+  upstream davranışını korur. Unit testler geçti.
+- [x] TAR/ZIP denetimine kaynak dosya, üye sayısı, toplam açılmış bayt, ZIP
+    central-directory üye/byte bütçesi, üye oranı ve süre limitleri ekle; ZIP
+    metadata `infolist()` öncesi denetlenir; TAR oranı yaklaşık raporlanır.
+- [x] Analyzer, deep PE, compare ve feature taramalarını ortak etkin limitlere
+    bağla; dependency inventory CLI/feature yolları da `max_file_bytes` ve
+    `max_scan_bytes` kullanır. PE deep 64 MiB working-set üstünü açıkça reddeder,
+    byte-diff ayrıntısı 4 KiB ile sınırlıdır. Bkz. `reverse-engineering/ROADMAP.md`.
+- [x] Probe MCP initialize/tools/resources list'ten coverage üretir. Canlı
+  IDA read-only: 43 tool, 8 resource, 22/33 capability (0.6667); canlı IDA
+  `doctor --probe-ida`: MCP initialize/tools/list başarılı, 65 tool keşfi,
+  IDB açma çağrısı yok. İzole Ghidra 12.1.2 CodeBrowser read-only: 16 tool,
+  0 resource, 13/17 capability (0.7647), sıfır unknown tool/resource.
+- [x] Büyük dosyada header/interior/tail seek taraması var; 9 MiB sonundaki
+  dongle imzası testte bulundu.
+- [x] Doctor'a isteğe bağlı, salt-okunur IDA/idalib MCP initialize/tools/list
+  probe ekle; çalıştırılmadığında `not_checked` raporla. Yerel probe 65 tool
+  keşfetti ve IDB açmadı.
+- [x] Ghidra token auth route kodu, loopback kısıtı ve tehdit modeli uygulandı;
+    pinned build ve Java HTTP auth testi geçti. 2026-10-01 tarihinde token'lı
+    Ghidra 12.1.2 CodeBrowser E2E izole dağıtım kopyasında geçti: eksik/yanlış/
+    doğru token 401/401/200; MCP initialize/list ve health/function/current-
+    function çağrıları başarılı; read-only coverage 16 tool, 0 resource,
+    13/17 capability (0.7647), 0 unknown tool/resource. Geçici örnek statik
+    analiz edildi, çalıştırılmadı. Önceki global `%APPDATA%` denemesi yalnızca
+    başarısız negatif kontrol olarak kaydedilir. Verifier bridge alt sürecine
+    token env aktarımı için düzeltildi; token dosyaya/loga yazılmaz.
+- [x] Yerel negatif/güvenlik testleri, 58 birim testi, ruff, mypy, operatör
+    belgeleri, IDA 9.4 canlı MCP/readiness, Ghidra 12.1.2 pinned patch/build +
+    auth CodeBrowser E2E ve büyük dosya limitleri doğrulandı. Ghidra auth E2E
+    izole kopyada yapıldı; ana Ghidra kurulumu değiştirilmedi.
+
+## 9.2 Ayarlar sistemi
+
+- Kullanıcının altı bulguyu takiplemesine yönelik limitleri eski varsayılanları
+  değiştirmeden kalıcı ayarlara bağlayan `settings.json` katmanı eklendi.
+- Dokuz mevcut runtime limit (`max_file_bytes`, `max_region_bytes`,
+  `max_scan_bytes`, `provider_timeout_seconds`, `max_provider_output_bytes`,
+  `max_archive_members`, `max_archive_expanded_bytes`,
+  `max_archive_member_ratio`, `archive_timeout_seconds`) ayarlanabilir;
+  `settings show/set/adjust/reset` CLI komutlarıyla okunur,
+  yükseltilir/düşürülür ve geri alınır.
+- `settings_read` ve doğrulamalı `settings_update` MCP araçları, sadece bu
+  allowlist edilmiş uygulama limitlerini yazar; binary/IDB/host mutation
+  yetkisi vermez. Etkinleşme için MCP yeniden başlatılır.
+- Öncelik: process environment > kullanıcı kayıtlı ayar > mevcut varsayılan.
+  Sınırlar/ilişkiler mevcut environment sözleşmesiyle aynı validasyondan geçer;
+  kayıt atomik replace ile yapılır. Kullanıcı yolu platform config dizinidir.
+- Ayrı takip hedefine eklendi: arşiv bombası bütçeleri, streaming/memory caps,
+  IDA/Ghidra coverage, büyük dosya sınıflandırması, canlı IDA readiness ve
+  Ghidra loopback API kimlik doğrulaması. Ayrıntı `ROADMAP.md` içindedir.
+
+## 9.3 Yeni takip hedefi — M8 izole user/kernel dinamik analiz
+
+M8, mevcut `sandbox_dynamic` onay kapısını somut bir Windows/Linux VM
+telemetry sistemine dönüştürmek için ROADMAP'te 12 sıralı teslimata ayrıldı:
+tehdit/yetki modeli; backend yaşam döngüsü; Windows Sandbox/Hyper-V user-mode
+MVP; ETW ve Linux user-mode olayları; ağsız varsayılan ve kontrollü ağ
+simülasyonu; Windows guest kernel ETW/WPP; Linux KVM tracepoint/eBPF; ortak
+olay şeması ve IDA/Ghidra korelasyonu; provenance'lı kanıt paketleri; MCP/IDE
+araçları; negatif güvenlik ve event-loss kabul testleri; ardından imzalı,
+audit'li üretimleştirme. Bunlar plan durumundadır, mevcut MCP'nin çalıştırma
+yeteneği olarak sunulmaz.
+
+Değişmezler: örnek host'ta çalışmaz; yalnız yetkili, kayıtlı disposable guest;
+başlatma açık kullanıcı onayı ve bütçe ister; ağ/clipboard/host paylaşımı
+varsayılan kapalı; dış egress ayrı onay/allowlist; kernel driver/probe yalnız
+guest içinde; MCP arbitrary shell veya host kernel arayüzü sunmaz. ETW ve
+tracepoint/eBPF olayları ham biçimde saklanır, normalize edilir ve kayıp
+sayaçları raporlanır. VM escape güvenliği mutlak garanti edilmez. Ayrıntılı
+sıra ve resmi araştırma kaynakları `reverse-engineering/ROADMAP.md` M8
+bölümündedir.
+
+## 9.4 Yeni takip hedefi — M9 otomatik OEP adayı ve runtime doğrulaması
+
+İlk M9 kod adımı: `pe-deep` analizine `oep_analysis` static hypotheses alanı
+ve read-only companion MCP `oep_static_candidates` aracı eklendi. Rapor örnek
+SHA-256'sını, declared EP referansını, yürütülebilir section adaylarını, RVA/VA
+ve file offset'leri, heuristik gerekçeleri/confidence'i, TLS callback VA/RVA/
+file-offset statik adaylarını, Guard CF/load-config metadata'sını, imported
+loader/memory API kategorilerini ve packer/entropy korelasyon sinyallerini
+(bounded/file-backed) gösterir. Bunlar runtime kanıtı değildir. Kaynak binary
+değişmez; statik sonuçta `runtime_verified=false` ve runtime doğrulanmadı uyarısı
+bulunur. Import/CFG/packer korelasyonu ve gerçek corpus ölçümü sonraki iştir.
+
+Statik OEP keşfi; declared EP çevresi, PE section/izin/offset ilişkileri,
+TLS callback, import/CFG ve unpacker göstergeleri gibi birden fazla sinyali
+kanıtlarıyla sıralayıp kullanıcıya gösterecek. Sonuç “aday” olarak kalır;
+heuristik puan gerçek OEP garantisi değildir. IDA/Ghidra kanıtları isteğe bağlı,
+salt-okunur adapter'lardan alınır.
+
+Runtime OEP akışı ayrı yetki kapısıdır: sistem sandbox planını, sample hash'ini,
+izole VM/snapshot'ı, ağ politikasını, kaynak ve artifact kotalarını sunar; bu
+belirli plan açıkça onaylanmadan örnek çalıştırılmaz. Onay sonrası yalnız
+kayıtlı broker trace/dump alır; event loss, adres/image uyuşmazlığı, bozuk dump
+veya yetersiz kanıt varsa sonuç “sonuçsuz” kalır. Kaynak örnek değiştirilmez,
+host üzerinde çalıştırılmaz ve OEP çıkarımı koruma/anti-analysis atlatma
+özelliğine dönüştürülmez. Runtime capture/broker entegrasyonu ve tam MCP araç
+yüzeyi henüz uygulanmış özellik sayılmaz; uygulama/test sırası
+`reverse-engineering/ROADMAP.md` M9 bölümündedir.
+
+İlk runtime kanıt teslimi `oep-runtime-verify` salt-okunur CLI'sidir: exact
+kullanıcı-onaylı plan hash'i, pinned Ed25519 broker imzası, sample/trace/dump
+hash'leri, zero-loss normalize trace, post-unpack control transfer ve executable
+dump section eşleşmesini denetler. Bu, kanıtı olan run için runtime OEP
+sonucunu çıkarabilir; capture/broker adapter'ı ve canlı VM entegrasyonu henüz
+kurulmadığı için kendisi örnek çalıştırmaz ve yerel sistem şu an kendi başına
+runtime OEP üretemez. `pe-deep` çıktısı runtime değer yokken bunu
+`oep_result.status=not_verified` ve belirgin `display_text` ile bildirir;
+broker imzalı kanıt geçerse doğrulayıcı `oep_display` içinde VA/RVA/file offset
+değerini verir. CAPEv2 REST task submit/status adapter'ı eklendi fakat varsayılan
+kapalıdır: yalnız operator machine/image/snapshot/blocked-network eşlemesi,
+pinned broker config ve her çağrıda `SUBMIT <plan-sha256>` onayı sağlanırsa
+MCP'de task başlatma aracı görünür. Bu adapter görev ID/durumunu verir, runtime
+OEP üretmez ve CAPE'nin gerçek izolasyonunu ispatlamaz. CAPE REST API submit/status/report/archive uçları,
+normalize trace ve plan-bağlı Ed25519 attestation sözleşmesini tek başına
+sağlamaz; broker adaptörü ve signing anahtarı broker tarafında kurulup test
+edilmelidir. Ayrıntılı protokol `references/runtime-oep-evidence.md`.
+Broker bağlantı parametreleri `RE_BROKER_PROVIDER`, `RE_BROKER_BASE_URL`,
+`RE_BROKER_ID`, `RE_BROKER_TOKEN`, `RE_BROKER_PUBLIC_KEY` ve
+`RE_BROKER_ALLOW_REMOTE_HTTPS` ile yapılandırılabilir. Task gönderim kapıları
+`RE_BROKER_SUBMISSION_ENABLED`, `RE_BROKER_CAPE_MACHINE`,
+`RE_BROKER_CAPE_IMAGE_DIGEST`, `RE_BROKER_CAPE_SNAPSHOT_ID` ve
+`RE_BROKER_CAPE_NETWORK_PROFILE` varsayılan kapalıdır;
+readiness yalnız base URL health GET'i yapar, sample/task göndermez ve capture
+adapter'ı hazır demek değildir. Token client config veya örnek env dosyasına
+yazılmaz. `oep_runtime_status` CAPE task durumunu GET ile okur; signed evidence
+doğrulanana kadar OEP `NOT VERIFIED` gösterilir.
+
+OEP çağrıları read-only analiz yetkisini korur; ayrıca açık ve dar kapsamlı
+read-write yüzeyi yalnız kullanıcı uygulama verisindeki UTC damgalı audit
+olaylarıdır (son 500 kayıt). `oep_static_candidates`, `oep_runtime_plan`,
+`oep_runtime_start`, `oep_runtime_status` ve `oep_runtime_verify` yapılan iş
+tanımı, sonuç durumu ve güvenli değer özetini
+kaydeder; token, sample yolu/içeriği ve host process belleği yazılmaz. Ayrı
+`re-dashboard` PWA `127.0.0.1:8766` üzerinde salt GET, loopback-only API ile bu
+olayları canlı gösterir. Binary/IDB patch ve sandbox start yetkisi bu kapsamdan
+çıkarılamaz.
+
+## 9.5 `read_write` host profili
+
+İstemci config üretiminde varsayılan profil değişmeden kalır. Kullanıcı
+`--host-profile read_write --confirm-read-write` ile açıkça opt-in verirse,
+IDA whitelist'i ve Ghidra bridge yalnız READ/ANNOTATE sınıflarını açar
+(rename/comment/type gibi IDB anotasyonları). Bilinmeyen araçlar, patch, debug,
+arbitrary Python ve dynamic execution kapsam dışıdır. Config parçaları
+MCP istemcisinin tool approval prompt'unu korur; her yazma çağrısı ayrıca
+istemcide onaylanmalıdır. Bu, host'a canlı write E2E yapılmış anlamına gelmez;
+yerel negatif testler ve pinned Ghidra patch apply doğrulanmıştır.
+Companion MCP'nin `RE_MCP_MODE=read_only` modu bu host profilinden bağımsız
+olarak read-only kalır.
 
 ## 10. Tamamlanma tanımı
 

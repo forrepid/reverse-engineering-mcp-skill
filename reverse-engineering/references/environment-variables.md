@@ -9,11 +9,12 @@ sözleşmenin parçası değildir.
 
 1. Zorunlu değişken var mı?
 2. Desteklenen değişkenler
-3. Önerilen kurulum
-4. PowerShell ile doğrudan kullanım
-5. İstemci config biçimleri
-6. Güvenlik kuralları
-7. Sorun giderme
+3. Broker bağlantı ayarları
+4. Önerilen kurulum
+5. PowerShell ile doğrudan kullanım
+6. İstemci config biçimleri
+7. Güvenlik kuralları
+8. Sorun giderme
 
 ## Zorunlu değişken var mı?
 
@@ -56,6 +57,92 @@ C:\Samples;D:\Authorized-Lab
 
 Symlink ve `..` kaçışını azaltmak için dosya ve root yolları resolve edilir;
 sample, resolved root'lardan birinin altında değilse çağrı reddedilir.
+
+## Broker bağlantı ayarları
+
+İsteğe bağlı runtime broker ayarları `.env.example` içinde listelenir ve
+readiness çıktısında ayrıca raporlanır. Bunlar `RE_MCP_*` read-only MCP
+environment allowlist'inden ayrıdır:
+
+| Değişken | Örnek/değer | İşlev |
+|---|---|---|
+| `RE_BROKER_PROVIDER` | `none`, `mock`, `cape`, `drakvuf`, `vmray`, `internal` | Broker türünü seçer; varsayılan kapalıdır; `mock` yalnız test içindir |
+| `RE_BROKER_BASE_URL` | `http://127.0.0.1:8000/apiv2` | Broker API adresi; varsayılan yalnız loopback kabul eder |
+| `RE_BROKER_ID` | `lab-broker-01` | Operator tarafından tanınan broker kimliği |
+| `RE_BROKER_TOKEN` | boş | İsteğe bağlı API token; yalnız process environment/secret manager |
+| `RE_BROKER_PUBLIC_KEY` | 64 hex karakter | Ed25519 raw public key'in SHA-256 pin'i |
+| `RE_BROKER_ALLOW_REMOTE_HTTPS` | `false` | `true` ise HTTPS remote endpoint yapılandırmasına izin verir |
+| `RE_BROKER_SUBMISSION_ENABLED` | `false` | Yalnız CAPE için açıkça etkinleştirilirse, onay hash'i ile tekil örnek görevi oluşturma aracını açar |
+| `RE_BROKER_CAPE_MACHINE` | boş | Operator'ın plan image/snapshot eşlemesine bağladığı CAPE machine label |
+| `RE_BROKER_CAPE_IMAGE_DIGEST` | boş | Planla eşleşmesi zorunlu operator-pinned guest image SHA-256 |
+| `RE_BROKER_CAPE_SNAPSHOT_ID` | boş | Planla eşleşmesi zorunlu temiz snapshot kimliği |
+| `RE_BROKER_CAPE_NETWORK_PROFILE` | boş | Görev açmak için tam `blocked` olmalıdır; CAPE'de gerçekten egress kapatıldığını operator doğrulamalı |
+
+Remote HTTP, URL içine credential/query eklemek ve public-key pin'i olmadan
+broker seçmek reddedilir. `readiness` health probe yalnız broker base URL'ine
+GET gönderir; sample/task submit etmez. Şimdiki readiness sonucu yapılandırma ve
+health erişimini gösterebilir ama görev göndermez. `submission_enabled` varsayılan
+olarak false'tur; yalnız yukarıdaki CAPE operator eşlemeleri ile true yapılır.
+Canlı trace, dump ve imzalı attestation üreten broker worker adapter'ı ayrı
+geliştirme ve kurulum adımıdır. `env-check` ile `client-configs`, MCP'nin `RE_MCP_*`
+sözleşmesine dair olduğundan broker girdilerini `.env` dosyasında doğrular,
+ancak hiçbir `RE_BROKER_*` değerini (özellikle token'ı) client config'e yaymaz.
+Broker credential'ı uygulamaya verilecekse broker'ı başlatan yerel process'e
+secret manager'dan enjekte edin; Codex/Claude gibi MCP client config'lerine
+token'ı kopyalamayın. `env-check` token'ı yazdırmadan doğrular.
+
+CAPEv2 REST adapter'ı `/apiv2/tasks/create/file/` ile görev başlatabilir ve
+`/apiv2/tasks/view/<id>/` ile durum okuyabilir. `RE_BROKER_SUBMISSION_ENABLED=true`
+yalnız makine/image/snapshot/ağ eşlemesi doğrulanıp görev gönderiminin riski
+operator tarafından kabul edildiğinde etkinleştirilmelidir. MCP start aracı her
+çağrıda `SUBMIT <plan-sha256>` onayı, örnek hash'i ve aynı plan hash'ini ister;
+task oluşturur, örneği yürütmenin güvenli olduğunu kendisi ispatlamaz. CAPE'nin
+konfigürasyonunun sıfır-egress, disposable snapshot ve kaynak limitlerini gerçekten
+uyguladığını dışarıdan doğrulayın. Bu adapter imzalı trace/dump/attestation
+üretmez; panel ve sonuç daima `Runtime OEP: NOT VERIFIED` der. OEP doğrulaması
+mevcut pinned Ed25519 kanıt sözleşmesiyle ayrı yapılır. Secret token'ı process
+environment/secret manager üzerinden sağlayın, `.env` veya MCP config'e yazmayın.
+
+## Ayrı yerel OEP PWA
+
+OEP MCP araçları her başarılı çağrıda UTC zaman damgalı, sınırlı bir denetim
+olayı yazar. Varsayılan konum Windows'ta
+`%LOCALAPPDATA%\reverse-engineering-companion\oep-events`, Linux'ta
+`$XDG_STATE_HOME/reverse-engineering-companion/oep-events` (yoksa
+`~/.local/state/...`) olur; son 500 olay tutulur. Yalnız hash, RVA/VA, durum,
+provider ve kısıtlı açıklama alanları kaydedilir; token, dosya yolu ve içerik
+kaydedilmez. Bu dar kapsamlı audit yazımı binary/IDB/host belleği değiştirmez.
+
+Ayrı terminalde `re-dashboard` komutunu çalıştırıp
+`http://127.0.0.1:8766/` adresini açın. Dashboard API/UI sadece loopback'e
+bağlanır ve GET-only'dir; PWA dosyaları kendisiyle birlikte paketlenir. Tarayıcı
+göstergeyi her 2.5 saniyede yeniler; service worker yalnız statik app kabuğunu
+cache'ler, `/api/*` canlı verisini cache'lemez. OEP işlemi yapılmadıysa değer
+“NOT VERIFIED”/bekleniyor olarak kalır.
+
+### İzole mock bağlantı testi
+
+Bu sahte backend yalnız `GET /` ve `GET /health` yanıtlar; POST/PUT taleplerini
+405 ile reddeder, örnek çalıştırmaz, capture veya imza üretmez. Terminal 1:
+
+~~~powershell
+python -m re_core.mock_broker --port 8765
+~~~
+
+Terminal 2 (yalnız o terminal oturumu için):
+
+~~~powershell
+$env:RE_BROKER_PROVIDER = "mock"
+$env:RE_BROKER_BASE_URL = "http://127.0.0.1:8765"
+$env:RE_BROKER_ID = "mock-broker"
+$env:RE_BROKER_TOKEN = ""
+$env:RE_BROKER_PUBLIC_KEY = ""
+python scripts\re_cli.py doctor
+~~~
+
+Rapor `status=test_only`, `continuous_capture=false`, `submission_enabled=false`
+olarak kalmalıdır. Bu test URL/ID'si gerçek CAPE kimliği değildir ve runtime
+OEP üretmez.
 
 ## Önerilen kurulum
 
