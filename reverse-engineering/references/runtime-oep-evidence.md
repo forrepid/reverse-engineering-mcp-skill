@@ -7,12 +7,12 @@ is an evidence verifier/import contract—not a runtime capture backend.
 
 ## Broker capture status
 
-No live broker endpoint, operator-pinned broker ID/key, or guest capture/signing
-agent is configured by this repository at present. `sandbox-plan` explicitly
-reports `broker_capture_contract.status=not_configured`,
-`continuous_capture=false`, and `submission_enabled=false`; it never starts a
-background poller or uploads a sample. A plan marked ready only means its
-static isolation fields are populated, not that a compatible broker exists.
+No live endpoint/credential is bundled. The optional CAPEv2 HTTP adapter supports
+single-task submission and status reads when the operator supplies credentials
+and mapping configuration. It is disabled by default. `sandbox-plan` itself
+never submits a sample. No background poller or continuous capture runs. A plan
+marked ready only means its static isolation fields are populated, not that a
+compatible/isolation-enforcing broker has been verified.
 
 CAPE's current REST API documents task submission, task status/report retrieval,
 and downloadable `all`/`dropped` result archives. That API alone does not
@@ -22,6 +22,19 @@ adapter must produce and sign those artifacts within the isolated broker; the
 private signing key must remain in the broker/HSM. Do not treat an ordinary
 CAPE report or an unsigned dump as runtime OEP proof. See the [CAPE REST API
 documentation](https://github.com/kevoreilly/CAPEv2/blob/master/docs/book/src/usage/api.rst).
+
+The implementation supports `POST /apiv2/tasks/create/file/` and
+`GET /apiv2/tasks/view/<id>/`. Task submission is a consequential sample upload
+and can execute the sample in the configured CAPE guest. It is therefore
+available only when `RE_BROKER_SUBMISSION_ENABLED=true`, operator machine/image/
+snapshot mappings match the exact approved plan, and the MCP call provides
+`approval_confirmation="SUBMIT <plan-sha256>"`. The request pins the selected
+machine, timeout, `enforce_timeout=1`, and `route=none`; the operator must still
+verify the actual CAPE machine and egress configuration. This is not a verified
+zero-egress attestation. Submission returns a task ID, never an OEP value.
+Status polling is a GET-only operation. The Ed25519 key pin currently configures
+the future evidence trust path; CAPE task API identity/status is not itself
+cryptographically bound to that signing key.
 
 Readiness performs only loopback TCP-connect checks for common documented
 candidate ports: CAPE web/API `127.0.0.1:8000`, DRAKVUF Sandbox web `:5000`, and

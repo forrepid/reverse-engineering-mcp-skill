@@ -27,6 +27,8 @@ ALLOWED_VALUE_KEYS = {
     "network",
     "timeout_seconds",
     "ready_for_broker_submission",
+    "task_id",
+    "task_status",
 }
 
 
@@ -60,7 +62,10 @@ def append_oep_event(
     *,
     directory: str | Path | None = None,
 ) -> dict[str, Any]:
-    if operation not in {"oep_static_candidates", "oep_runtime_plan", "oep_runtime_verify"}:
+    if operation not in {
+        "oep_static_candidates", "oep_runtime_plan", "oep_runtime_verify",
+        "oep_runtime_start", "oep_runtime_status",
+    }:
         raise ValueError("unsupported dashboard operation")
     event_id = str(uuid.uuid4())
     timestamp_utc = _utc_now()

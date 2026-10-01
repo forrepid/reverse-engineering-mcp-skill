@@ -12,6 +12,7 @@ from re_core.advanced_workflows import execute_local_feature, local_feature_ids
 from re_core.adapters import GHIDRA_CAPABILITIES, IDA_CAPABILITIES, CapabilityProfile
 from re_core.broker_config import load_broker_config
 from re_core.broker_discovery import discover_local_brokers
+from re_core.cape_backend import get_task_status, submit_approved_plan
 from re_core.client_configs import client_profiles
 from re_core.environment import (
     EnvironmentConfigError,
@@ -46,18 +47,20 @@ from re_core.transforms import entropy_windows, scan_single_byte_xor
 def server_status() -> dict[str, Any]:
     runtime = load_runtime_environment()
     environment = build_environment_contract()
+    broker = load_broker_config()
     return {
         "schema_version": "0.5.0",
         "name": "reverse-engineering-companion",
         "transport": "stdio",
         "mcp_importable": importlib.util.find_spec("mcp") is not None,
-        "tool_count": 25,
+        "tool_count": 26 + int(broker.submission_enabled),
         "default_mode": "read_only",
         "writes_exposed": True,
         "write_scope": "timestamped OEP audit journal under the user application-data directory only",
         "local_audit_writes": True,
         "binary_or_host_mutation_tools_exposed": False,
-        "unsafe_tools_exposed": False,
+        "unsafe_tools_exposed": broker.submission_enabled,
+        "sample_submission_tool_exposed": broker.submission_enabled,
         "environment": environment,
         "feature_catalog": validate_feature_catalog(),
         "local_feature_ids": list(local_feature_ids()),
@@ -158,18 +161,19 @@ def build_server() -> Any:
             memory_mb=memory_mb,
             disk_mb=disk_mb,
         )
-        broker = load_broker_config().public_status()
+        broker_config = load_broker_config()
+        broker = broker_config.public_status()
         plan["broker_capture_contract"] = {
             **plan["broker_capture_contract"],
             "status": broker["status"],
             "provider": broker["provider"],
             "broker_id": broker["broker_id"],
             "local_candidates": discover_local_brokers(),
-            "capture_adapter": "not_implemented",
+            "task_adapter": "cape_rest_task_submission" if broker_config.submission_enabled and broker_config.provider == "cape" else "not_implemented",
             "continuous_capture": False,
-            "submission_enabled": False,
+            "submission_enabled": broker_config.submission_enabled,
             "live_capture_ready": False,
-            "note": "Plan preview only. No sample submission or execution is available through this MCP tool.",
+            "note": "This tool only plans. A separately gated explicit CAPE submission tool is available only when operator mappings are configured; task submission itself does not verify OEP.",
         }
         plan["status"] = "plan_only"
         plan["audit_event"] = _audit_oep(
@@ -448,6 +452,59 @@ def build_server() -> Any:
             for name in sorted(profile.discovered_tools)
         }
         return payload
+
+    @mcp.tool()
+    def oep_runtime_status(task_id: str) -> dict[str, Any]:
+        """Read one existing CAPEv2 task state; does not create or alter tasks."""
+        config = load_broker_config()
+        result = get_task_status(config, task_id)
+        result["audit_event"] = _audit_oep(
+            "oep_runtime_status",
+            "CAPE analiz görevi durumu okundu; OEP kanıtı doğrulanmadı.",
+            str(result.get("status", "unknown")),
+            {"broker_id": config.broker_id, "task_id": task_id, "task_status": result.get("status")},
+        )
+        return result
+
+    broker_config = load_broker_config()
+    if broker_config.submission_enabled:
+        @mcp.tool()
+        def oep_runtime_start(
+            sample: str,
+            plan: str,
+            confirm_plan_sha256: str,
+            approval_confirmation: str,
+        ) -> dict[str, Any]:
+            """Submit one approved plan to a pre-mapped CAPE machine; exact phrase SUBMIT <plan SHA-256> is required."""
+            source = runtime.validate_file(sample)
+            approved_plan = runtime.validate_file(plan)
+            expected_confirmation = f"SUBMIT {confirm_plan_sha256.lower()}"
+            if approval_confirmation != expected_confirmation:
+                raise ValueError("approval_confirmation must exactly equal: SUBMIT <confirmed plan SHA-256>")
+            result = submit_approved_plan(
+                broker_config,
+                source,
+                approved_plan,
+                confirm_plan_sha256=confirm_plan_sha256,
+                cape_machine=broker_config.cape_machine or "",
+                mapped_image_digest=broker_config.cape_image_digest or "",
+                mapped_snapshot_id=broker_config.cape_snapshot_id or "",
+                network_profile=broker_config.cape_network_profile or "",
+            )
+            result["audit_event"] = _audit_oep(
+                "oep_runtime_start",
+                "Kullanıcı plan hash'iyle onayladı; CAPE görevi oluşturuldu, runtime OEP doğrulanmadı.",
+                "submitted",
+                {
+                    "provider": "cape",
+                    "broker_id": broker_config.broker_id,
+                    "sample_sha256": result["sample_sha256"],
+                    "plan_sha256": result["plan_sha256"],
+                    "task_id": result["task_id"],
+                    "display_text": "CAPE task submitted; Runtime OEP: NOT VERIFIED",
+                },
+            )
+            return result
 
     @mcp.tool()
     def system_readiness(

@@ -281,17 +281,21 @@ koşulda host'ta otomatik başlatılmaz.
    kontrollerinden geçmesi ve trace-dump-image eşleşmesinin gösterilmesi
    gerekir. Kısmi telemetry, event loss, çökme, timeout, adres uyuşmazlığı veya
    bozuk dump varsa sonuç `inconclusive` kalır; OEP tahmin edilerek yükseltilmez.
-    Broker adapter sözleşmesi: `references/runtime-oep-evidence.md`. Broker şu
-    an yapılandırılmış değildir; plan örneği çalıştırmaz/göndermez ve sürekli
-    capture başlatmaz. CAPE REST API task submit/status/report ve result archive
-    uçları sunar; fakat bizim lossless normalize trace + reconstructed PE + plan
-    bound Ed25519 sözleşmesini hazır sağladığı varsayılamaz. CAPE worker/agent
-    capture-signing adaptörü ve pinned anahtar ayrıca kurulup test edilmelidir.
+    Broker adapter sözleşmesi: `references/runtime-oep-evidence.md`. CAPEv2
+    REST submit/status adapter'ı eklendi; sample upload yalnız etkinleştirilmiş
+    operatör eşlemesi ve her çağrıda tam plan SHA-256 onayıyla açılır. Bu görev
+    başlatma, sürekli capture veya OEP doğrulaması değildir. CAPE REST task
+    submit/status/report uçları lossless normalize trace + reconstructed PE +
+    plan-bound Ed25519 sözleşmesini hazır sağlamaz; guest capture-signing
+    worker'ı ve broker/HSM anahtarı hâlâ ayrı geliştirme/kurulum gerektirir.
 9. **M9.9 — Broker bağlantı yapılandırması.** [x] `RE_BROKER_PROVIDER`,
    loopback/HTTPS base URL, broker ID, token environment variable, operator-pinned
    Ed25519 public-key digest ve remote HTTPS opt-in env örneği eklendi. Readiness
    yalnız GET base URL sağlık kontrolü yapar; task submit etmez. Credential
-   çıktılarda redacted kalır. Canlı capture/signing adaptörü hâlâ yoktur.
+   çıktılarda redacted kalır. [x] Gated CAPEv2 submit/status adapter eklendi;
+   varsayılan kapalı, explicit plan-hash approval ve operator machine/image/
+   snapshot/blocked-network eşlemesi olmadan submit aracı açılmaz. Adapter
+   signing/capture üretmez, OEP iddiası oluşturmaz.
    [x] Loopback-only test mock health endpoint eklendi; yalnız GET sağlık verir,
    POST/PUT 405 döndürür ve readiness `test_only` olarak işaretler. Bu, canlı
    broker/capture doğrulaması değildir. [x] CAPE 8000, DRAKVUF Sandbox 5000 ve
@@ -309,9 +313,13 @@ koşulda host'ta otomatik başlatılmaz.
    `oep_static_candidates` (scan/show/export) ve ayrı onay kapılı
    `oep_runtime_plan`, `oep_runtime_start`, `oep_runtime_status`,
    `oep_runtime_trace`, `oep_runtime_dump`, `oep_runtime_export` araçları.
-   Runtime araçları default/read-only profiline girmez; broker ID ve plan hash'i
-   zorunludur. Keyfi PID, host path, shell, inject, bellek yazma veya genel VM
-   console parametresi kabul edilmez.
+   `oep_runtime_status` yalnız bilinen CAPE task ID'sini GET ile sorgular.
+   `oep_runtime_start` yalnız `RE_BROKER_SUBMISSION_ENABLED=true` iken tool
+   olarak görünür ve `SUBMIT <plan SHA-256>` açık onayı ister. Start/status UTC
+   journal ve PWA'ya aktarılır; OEP kanıtı gelene kadar NOT VERIFIED kalır.
+   Runtime start, default/read-only profilde yoktur. Keyfi PID, host path, shell,
+   inject, bellek yazma veya genel VM console parametresi kabul edilmez. Guest
+   capture-signing, trace/dump export ve OEP evidence ingest hâlâ roadmap'tedir.
 11. **M9.11 — Test, ölçüm ve kabul.** Yetkili, temiz ve sentetik unpacker/OEP
     corpus; bilinen non-packed PE, TLS callback, overlay, malformed/truncated
     PE, high-entropy ama packed olmayan dosya, 32/64-bit, false-positive ve

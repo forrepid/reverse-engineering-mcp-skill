@@ -19,6 +19,7 @@ from .external import provider_status
 from .feature_catalog import validate_feature_catalog
 from .broker_config import BrokerConfigError, load_broker_config, probe_broker_health
 from .broker_discovery import discover_local_brokers
+from .cape_backend import CapeBackendError, cape_status
 
 
 DEPENDENCIES = ("mcp", "capstone", "lief", "pefile")
@@ -298,7 +299,17 @@ def build_readiness_report(
     try:
         broker_config = load_broker_config()
         broker_status: dict[str, Any] = broker_config.public_status()
-        broker_status["health"] = probe_broker_health(broker_config)
+        if broker_config.provider == "cape" and broker_config.configured:
+            try:
+                broker_status["health"] = cape_status(broker_config)
+            except CapeBackendError as error:
+                broker_status["health"] = {
+                    "status": "unreachable_or_invalid",
+                    "reachable": False,
+                    "error": str(error),
+                }
+        else:
+            broker_status["health"] = probe_broker_health(broker_config)
     except BrokerConfigError as error:
         broker_status = {
             "provider": "unknown",

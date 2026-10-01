@@ -72,18 +72,36 @@ environment allowlist'inden ayrıdır:
 | `RE_BROKER_TOKEN` | boş | İsteğe bağlı API token; yalnız process environment/secret manager |
 | `RE_BROKER_PUBLIC_KEY` | 64 hex karakter | Ed25519 raw public key'in SHA-256 pin'i |
 | `RE_BROKER_ALLOW_REMOTE_HTTPS` | `false` | `true` ise HTTPS remote endpoint yapılandırmasına izin verir |
+| `RE_BROKER_SUBMISSION_ENABLED` | `false` | Yalnız CAPE için açıkça etkinleştirilirse, onay hash'i ile tekil örnek görevi oluşturma aracını açar |
+| `RE_BROKER_CAPE_MACHINE` | boş | Operator'ın plan image/snapshot eşlemesine bağladığı CAPE machine label |
+| `RE_BROKER_CAPE_IMAGE_DIGEST` | boş | Planla eşleşmesi zorunlu operator-pinned guest image SHA-256 |
+| `RE_BROKER_CAPE_SNAPSHOT_ID` | boş | Planla eşleşmesi zorunlu temiz snapshot kimliği |
+| `RE_BROKER_CAPE_NETWORK_PROFILE` | boş | Görev açmak için tam `blocked` olmalıdır; CAPE'de gerçekten egress kapatıldığını operator doğrulamalı |
 
 Remote HTTP, URL içine credential/query eklemek ve public-key pin'i olmadan
 broker seçmek reddedilir. `readiness` health probe yalnız broker base URL'ine
 GET gönderir; sample/task submit etmez. Şimdiki readiness sonucu yapılandırma ve
-health erişimini gösterebilir ama `submission_enabled=false` kalır: canlı trace,
-dump ve imzalı attestation üreten broker worker adapter'ı ayrı geliştirme ve
-kurulum adımıdır. `env-check` ile `client-configs`, MCP'nin `RE_MCP_*`
+health erişimini gösterebilir ama görev göndermez. `submission_enabled` varsayılan
+olarak false'tur; yalnız yukarıdaki CAPE operator eşlemeleri ile true yapılır.
+Canlı trace, dump ve imzalı attestation üreten broker worker adapter'ı ayrı
+geliştirme ve kurulum adımıdır. `env-check` ile `client-configs`, MCP'nin `RE_MCP_*`
 sözleşmesine dair olduğundan broker girdilerini `.env` dosyasında doğrular,
 ancak hiçbir `RE_BROKER_*` değerini (özellikle token'ı) client config'e yaymaz.
 Broker credential'ı uygulamaya verilecekse broker'ı başlatan yerel process'e
 secret manager'dan enjekte edin; Codex/Claude gibi MCP client config'lerine
 token'ı kopyalamayın. `env-check` token'ı yazdırmadan doğrular.
+
+CAPEv2 REST adapter'ı `/apiv2/tasks/create/file/` ile görev başlatabilir ve
+`/apiv2/tasks/view/<id>/` ile durum okuyabilir. `RE_BROKER_SUBMISSION_ENABLED=true`
+yalnız makine/image/snapshot/ağ eşlemesi doğrulanıp görev gönderiminin riski
+operator tarafından kabul edildiğinde etkinleştirilmelidir. MCP start aracı her
+çağrıda `SUBMIT <plan-sha256>` onayı, örnek hash'i ve aynı plan hash'ini ister;
+task oluşturur, örneği yürütmenin güvenli olduğunu kendisi ispatlamaz. CAPE'nin
+konfigürasyonunun sıfır-egress, disposable snapshot ve kaynak limitlerini gerçekten
+uyguladığını dışarıdan doğrulayın. Bu adapter imzalı trace/dump/attestation
+üretmez; panel ve sonuç daima `Runtime OEP: NOT VERIFIED` der. OEP doğrulaması
+mevcut pinned Ed25519 kanıt sözleşmesiyle ayrı yapılır. Secret token'ı process
+environment/secret manager üzerinden sağlayın, `.env` veya MCP config'e yazmayın.
 
 ## Ayrı yerel OEP PWA
 

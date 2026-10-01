@@ -21,6 +21,11 @@ BROKER_ENV = {
     "RE_BROKER_TOKEN": "",
     "RE_BROKER_PUBLIC_KEY": "",
     "RE_BROKER_ALLOW_REMOTE_HTTPS": "false",
+    "RE_BROKER_SUBMISSION_ENABLED": "false",
+    "RE_BROKER_CAPE_MACHINE": "",
+    "RE_BROKER_CAPE_IMAGE_DIGEST": "",
+    "RE_BROKER_CAPE_SNAPSHOT_ID": "",
+    "RE_BROKER_CAPE_NETWORK_PROFILE": "",
 }
 _ALLOWED_PROVIDERS = {"none", "mock", "cape", "drakvuf", "vmray", "internal"}
 _HEX_DIGEST = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
@@ -34,6 +39,11 @@ class BrokerConfig:
     token: str | None
     public_key: str | None
     allow_remote_https: bool
+    submission_enabled: bool = False
+    cape_machine: str | None = None
+    cape_image_digest: str | None = None
+    cape_snapshot_id: str | None = None
+    cape_network_profile: str | None = None
 
     @property
     def configured(self) -> bool:
@@ -61,7 +71,7 @@ class BrokerConfig:
             "public_key_sha256_pin": self.public_key,
             "allow_remote_https": self.allow_remote_https,
             "continuous_capture": False,
-            "submission_enabled": False,
+            "submission_enabled": self.submission_enabled,
             "live_capture_ready": False,
             "required_outputs": [
                 "normalized_trace.json",
@@ -81,6 +91,10 @@ def load_broker_config(environ: Mapping[str, str] | None = None) -> BrokerConfig
     if remote_value not in {"true", "false"}:
         raise BrokerConfigError("RE_BROKER_ALLOW_REMOTE_HTTPS must be true or false")
     allow_remote = remote_value == "true"
+    submission_value = values["RE_BROKER_SUBMISSION_ENABLED"].lower()
+    if submission_value not in {"true", "false"}:
+        raise BrokerConfigError("RE_BROKER_SUBMISSION_ENABLED must be true or false")
+    submission_enabled = submission_value == "true"
     raw_url = values["RE_BROKER_BASE_URL"]
     base_url: str | None = None
     if raw_url:
@@ -109,6 +123,23 @@ def load_broker_config(environ: Mapping[str, str] | None = None) -> BrokerConfig
         raise BrokerConfigError("a configured broker requires RE_BROKER_ID")
     if base_url and provider != "mock" and not public_key:
         raise BrokerConfigError("a configured broker requires an operator-pinned RE_BROKER_PUBLIC_KEY")
+    cape_machine = values["RE_BROKER_CAPE_MACHINE"] or None
+    cape_image_digest = values["RE_BROKER_CAPE_IMAGE_DIGEST"].lower().removeprefix("sha256:") or None
+    cape_snapshot_id = values["RE_BROKER_CAPE_SNAPSHOT_ID"] or None
+    cape_network_profile = values["RE_BROKER_CAPE_NETWORK_PROFILE"] or None
+    if submission_enabled:
+        if provider != "cape" or not (base_url and broker_id and public_key):
+            raise BrokerConfigError("live submission requires configured CAPE, broker ID, and pinned public-key digest")
+        if not (cape_machine and cape_image_digest and cape_snapshot_id and cape_network_profile == "blocked"):
+            raise BrokerConfigError("live CAPE submission requires operator-mapped machine, image digest, snapshot ID, and blocked network profile")
+        if not _HEX_DIGEST.fullmatch(cape_image_digest):
+            raise BrokerConfigError("RE_BROKER_CAPE_IMAGE_DIGEST must be a SHA-256 image digest")
+        if len(cape_snapshot_id) > 256 or not re.fullmatch(r"[A-Za-z0-9._:-]+", cape_snapshot_id):
+            raise BrokerConfigError("RE_BROKER_CAPE_SNAPSHOT_ID contains unsupported characters")
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", cape_machine):
+            raise BrokerConfigError("RE_BROKER_CAPE_MACHINE contains unsupported characters")
+    elif any((cape_machine, cape_image_digest, cape_snapshot_id, cape_network_profile)):
+        raise BrokerConfigError("CAPE submission mappings require RE_BROKER_SUBMISSION_ENABLED=true")
     return BrokerConfig(
         provider=provider,
         base_url=base_url,
@@ -116,6 +147,11 @@ def load_broker_config(environ: Mapping[str, str] | None = None) -> BrokerConfig
         token=values["RE_BROKER_TOKEN"] or None,
         public_key=public_key,
         allow_remote_https=allow_remote,
+        submission_enabled=submission_enabled,
+        cape_machine=cape_machine,
+        cape_image_digest=cape_image_digest,
+        cape_snapshot_id=cape_snapshot_id,
+        cape_network_profile=cape_network_profile,
     )
 
 

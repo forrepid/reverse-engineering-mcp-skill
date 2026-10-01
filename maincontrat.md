@@ -405,22 +405,30 @@ kurulmadığı için kendisi örnek çalıştırmaz ve yerel sistem şu an kendi
 runtime OEP üretemez. `pe-deep` çıktısı runtime değer yokken bunu
 `oep_result.status=not_verified` ve belirgin `display_text` ile bildirir;
 broker imzalı kanıt geçerse doğrulayıcı `oep_display` içinde VA/RVA/file offset
-değerini verir. Broker API, guest sensor/capture/signing adapter'ı şu anda
-yapılandırılmış değildir. CAPE REST API submit/status/report/archive uçları,
+değerini verir. CAPEv2 REST task submit/status adapter'ı eklendi fakat varsayılan
+kapalıdır: yalnız operator machine/image/snapshot/blocked-network eşlemesi,
+pinned broker config ve her çağrıda `SUBMIT <plan-sha256>` onayı sağlanırsa
+MCP'de task başlatma aracı görünür. Bu adapter görev ID/durumunu verir, runtime
+OEP üretmez ve CAPE'nin gerçek izolasyonunu ispatlamaz. CAPE REST API submit/status/report/archive uçları,
 normalize trace ve plan-bağlı Ed25519 attestation sözleşmesini tek başına
 sağlamaz; broker adaptörü ve signing anahtarı broker tarafında kurulup test
 edilmelidir. Ayrıntılı protokol `references/runtime-oep-evidence.md`.
 Broker bağlantı parametreleri `RE_BROKER_PROVIDER`, `RE_BROKER_BASE_URL`,
 `RE_BROKER_ID`, `RE_BROKER_TOKEN`, `RE_BROKER_PUBLIC_KEY` ve
-`RE_BROKER_ALLOW_REMOTE_HTTPS` ile yapılandırılabilir. Varsayılan kapalıdır;
+`RE_BROKER_ALLOW_REMOTE_HTTPS` ile yapılandırılabilir. Task gönderim kapıları
+`RE_BROKER_SUBMISSION_ENABLED`, `RE_BROKER_CAPE_MACHINE`,
+`RE_BROKER_CAPE_IMAGE_DIGEST`, `RE_BROKER_CAPE_SNAPSHOT_ID` ve
+`RE_BROKER_CAPE_NETWORK_PROFILE` varsayılan kapalıdır;
 readiness yalnız base URL health GET'i yapar, sample/task göndermez ve capture
 adapter'ı hazır demek değildir. Token client config veya örnek env dosyasına
-yazılmaz.
+yazılmaz. `oep_runtime_status` CAPE task durumunu GET ile okur; signed evidence
+doğrulanana kadar OEP `NOT VERIFIED` gösterilir.
 
 OEP çağrıları read-only analiz yetkisini korur; ayrıca açık ve dar kapsamlı
 read-write yüzeyi yalnız kullanıcı uygulama verisindeki UTC damgalı audit
-olaylarıdır (son 500 kayıt). `oep_static_candidates`, `oep_runtime_plan` ve
-`oep_runtime_verify` yapılan iş tanımı, sonuç durumu ve güvenli değer özetini
+olaylarıdır (son 500 kayıt). `oep_static_candidates`, `oep_runtime_plan`,
+`oep_runtime_start`, `oep_runtime_status` ve `oep_runtime_verify` yapılan iş
+tanımı, sonuç durumu ve güvenli değer özetini
 kaydeder; token, sample yolu/içeriği ve host process belleği yazılmaz. Ayrı
 `re-dashboard` PWA `127.0.0.1:8766` üzerinde salt GET, loopback-only API ile bu
 olayları canlı gösterir. Binary/IDB patch ve sandbox start yetkisi bu kapsamdan
